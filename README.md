@@ -78,11 +78,13 @@ Ground truth from LiDAR-SLAM reconstruction (`reconstruction/hawkins_run4_car/tr
 
 | Metric | Value |
 |--------|-------|
-| Matched Poses | 1526 |
-| Scale Factor | 0.1014 |
-| ATE RMSE | 5.24 m |
-| ATE Mean | 5.05 m |
-| ATE Max | 8.85 m |
+| Matched Poses | 1531 |
+| Scale Factor | 0.1013 |
+| ATE RMSE | 6.92 m |
+| ATE Mean | 6.17 m |
+| ATE Median | 6.17 m |
+| ATE Std | 3.13 m |
+| ATE Max | 11.74 m |
 
 ![Trajectory Comparison](results/trajectory_comparison.png)
 
