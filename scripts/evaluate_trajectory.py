@@ -115,12 +115,16 @@ def main():
     pos_gt_matched = pos_gt[matches[:, 0]]
     pos_vo_matched = pos_vo[matches[:, 1]]
 
-    # Sim(3) alignment
+    # Sim(3) alignment (scale + rotation + translation)
     scale, R, t = sim3_align(pos_gt_matched, pos_vo_matched)
     print(f"Alignment scale: {scale:.4f}")
 
     pos_vo_aligned = apply_sim3(pos_vo_matched, scale, R, t)
     pos_vo_full_aligned = apply_sim3(pos_vo, scale, R, t)
+
+    # Shift each trajectory so it starts at (0,0,0)
+    pos_gt_matched -= pos_gt_matched[0].copy()
+    pos_vo_aligned -= pos_vo_aligned[0].copy()
 
     # ATE
     errors, ate_rmse = compute_ate(pos_gt_matched, pos_vo_aligned)
@@ -141,10 +145,10 @@ def main():
 
     # Top-down view (X-Y)
     ax1 = axes[0]
-    ax1.plot(pos_gt[:, 0], pos_gt[:, 1], 'b-', linewidth=1.5, label='Ground Truth', alpha=0.8)
-    ax1.plot(pos_vo_full_aligned[:, 0], pos_vo_full_aligned[:, 1], 'r-', linewidth=1.5, label='VO (aligned)', alpha=0.8)
-    ax1.plot(pos_gt[0, 0], pos_gt[0, 1], 'go', markersize=10, label='Start')
-    ax1.plot(pos_gt[-1, 0], pos_gt[-1, 1], 'ks', markersize=10, label='End (GT)')
+    ax1.plot(pos_gt_matched[:, 0], pos_gt_matched[:, 1], 'b-', linewidth=1.5, label='Ground Truth', alpha=0.8)
+    ax1.plot(pos_vo_aligned[:, 0], pos_vo_aligned[:, 1], 'r-', linewidth=1.5, label='VO (aligned)', alpha=0.8)
+    ax1.plot(0, 0, 'go', markersize=10, label='Start')
+    ax1.plot(pos_gt_matched[-1, 0], pos_gt_matched[-1, 1], 'ks', markersize=10, label='End (GT)')
     ax1.set_xlabel('X (m)', fontsize=12)
     ax1.set_ylabel('Y (m)', fontsize=12)
     ax1.set_title('Top-Down View (X-Y)', fontsize=14)
