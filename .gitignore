@@ -12,6 +12,7 @@ log/
 # Python
 __pycache__/
 *.pyc
+*.pyo
 .eggs/
 *.egg-info/
 
@@ -21,3 +22,12 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Datasets — not versioned (SThereo / FIReStereo raw data, ~17 GB)
+data/
+
+# Generated outputs — trajectories, plots, feature analyses (~1.7 GB)
+results/
+
+# Diagnostic logs
+logs/

@@ -1,0 +1,19 @@
+# SThereo dataset - valley_evening configuration
+
+dataset:
+  name: sthereo_valley
+  image_dir: /home/akin/sthereo/valley_evening/image/stereo_left
+  gt_file: /home/akin/sthereo/valley_evening/pose/global_pose.csv
+  gt_format: csv  # timestamp, x_utm, y_utm, z, roll, pitch, yaw
+  image_format: png
+  is_stereo_side_by_side: true   # images are 1280x560, left half is left camera
+  bit_depth: 8
+
+camera:
+  fx: 429.43288
+  fy: 429.53142
+  cx: 311.11923
+  cy: 266.12817
+  dist: [-0.35808823, 0.09943184, 0.0, 0.0, 0.0]
+  width: 640
+  height: 560
