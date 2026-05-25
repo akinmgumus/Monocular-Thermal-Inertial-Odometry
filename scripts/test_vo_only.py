@@ -35,8 +35,8 @@ from thermal_vo.klt                 import KLTTracker
 from thermal_vo                     import config_sthereo as config
 
 
-METHOD        = 'ORB'  # 'ORB' or 'KLT'
-VIZ_EVERY     = 2
+METHOD        = 'KLT'  # 'ORB' or 'KLT'
+VIZ_EVERY     = 50     # redraw every Nth cam frame
 STEP_SCALE    = 1.0   # scale factor for the trajectory (pure monocular VO has no metric scale, so this is just for visualization)
 STATIONARY_PX = 1.0   # median pixel-flow below this → vehicle stationary, skip pose
 

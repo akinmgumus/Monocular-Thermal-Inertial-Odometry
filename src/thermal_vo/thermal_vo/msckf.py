@@ -995,8 +995,12 @@ class MSCKF:
             #    Phase 2'de henüz hiçbir update uygulanmadı. Sequential'da
             #    ilerleyen track'ler için P küçülecek, ama gate'i tek başına
             #    Phase 1'de değerlendirmek deterministic ve düzenli.
+            # TANI (Adım 3): chi2_enabled=False iken gate atlanır — chi2
+            # reddinin divergence mekanizmasının parçası olup olmadığını
+            # izole etmek için. Kalıcı değil.
             thresh = self._chi2_thresh.get(df) or float(_chi2_dist.ppf(0.95, df))
-            if self._track_mahalanobis_sq(H_o, r_o, sigma_norm) > thresh:
+            if getattr(self, 'chi2_enabled', True) and \
+                    self._track_mahalanobis_sq(H_o, r_o, sigma_norm) > thresh:
                 n_chi2 += 1
                 continue
 
@@ -1156,6 +1160,21 @@ class MSCKF:
             # Sayısal asimetri biriken yuvarlama hatalarından gelir; her
             # adımda 0.5 * (P + P^T) ile düzelt.
             self.P_matrix = 0.5 * (P_new + P_new.T)
+
+        # ── TANI: REPROJECTION RESIDUAL AZALMASI ─────────────────────────
+        # Update lokal olarak doğru çalışıyor mu? Toplam ||r||_pre vs
+        # ||r||_post karşılaştır. dx_total uygulandıktan sonra her accepted
+        # track'in yeni residual'i r_post = r_o − H_o · dx_total. Sağlıklı
+        # bir EKF update bunu AZALTIR; oran > 1 ise update math'inde ters
+        # yön/işaret hatası vardır — bug lokalize.
+        if _diag_on:
+            sum_pre  = sum(np.linalg.norm(r) for _, r in accepted)
+            sum_post = sum(np.linalg.norm(r - H @ dx_total) for H, r in accepted)
+            ratio    = sum_post / sum_pre if sum_pre > 0 else float('nan')
+            tag      = 'AZALDI' if ratio < 1.0 else 'ARTTI'
+            print(f"[diag u{self._diag_done + 1}] residual reduction: "
+                  f"||r||_pre={sum_pre:.3f} → ||r||_post={sum_post:.3f}  "
+                  f"ratio={ratio:.3f}  ({tag})", flush=True)
 
         # ----- BOXPLUS: biriken toplam Δx'i nominal state'e BİR KERE uygula.
         # Nominal state döngü İÇİNDE güncellenmez — yoksa H_o/r_o eski

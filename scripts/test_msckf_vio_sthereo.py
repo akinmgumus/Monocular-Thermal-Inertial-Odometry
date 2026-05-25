@@ -66,8 +66,20 @@ EXTRINSIC_MODE = 'direct'
 if EXTRINSIC_MODE not in ('invert', 'direct'):
     raise ValueError(f"Bilinmeyen EXTRINSIC_MODE={EXTRINSIC_MODE!r}")
 
+# ── TANI: CHI2 GATE ───────────────────────────────────────────────────────
+# False iken MSCKF'in per-track chi-square (Mahalanobis) outlier kapısı
+# atlanır. Adım 3 turnusol testi: chi2 reddi divergence'ın parçası mı?
+CHI2_GATE = False
+
 MAX_WINDOW = 15    # max number of cam states in MSCKF sliding window (older are marginalized out)
-VIZ_EVERY  = 1     # redraw every Nth cam frame
+VIZ_EVERY  = 20    # redraw every Nth cam frame
+
+# ── ADIM 1: UPDATE BAŞINA TRACK TAVANI ────────────────────────────────────
+# marginalize_at_prune pencere dolunca yüzlerce track'i tek update'e
+# basabiliyor → P aşırı küçülür (P-collapse) → chi2 gate sonraki ölçümleri
+# reddeder. Tavan: her update'te en uzun (en sağlam) MAX_TRACKS_PER_UPDATE
+# track işlenir. MSCKF'te fazla track doğruluğu artırmaz, P'yi çökertir.
+MAX_TRACKS_PER_UPDATE = 25
 
 USE_CLAHE = False  # denoise thermal + improve contrast with CLAHE (termal VO'da genellikle kapalı tutmak daha iyi sonuç veriyor)
 if USE_CLAHE:
@@ -210,6 +222,9 @@ def run():
     msckf.lock_imu_attitude = LOCK_ATTITUDE
     if LOCK_ATTITUDE:
         print("TANI: LOCK_ATTITUDE açık — update IMU attitude'una (δθ) dokunmuyor")
+    msckf.chi2_enabled = CHI2_GATE
+    if not CHI2_GATE:
+        print("TANI: CHI2_GATE kapalı — chi-square outlier kapısı atlanıyor")
     t_init_end = imu.timestamps[n_static - 1]
     msckf_yaw_init_deg = msckf.nominal_rot.as_euler('xyz', degrees=True)[2]
     print(f"static init: {n_static} samples,  |g|={np.linalg.norm(msckf.gravity):.4f}")
@@ -338,7 +353,16 @@ def run():
                         tracker.marginalize_at_prune(cs.frame_id)
 
                 n_retired = len(tracker.dead_tracks)
-                msckf.update(tracker.dead_tracks)
+
+                # ADIM 1: update başına track sayısını sınırla. dead_tracks
+                # zaten min_track_length=3 filtresinden geçti; burada en uzun
+                # (en çok gözlemli, en sağlam geometrili) olanları seçiyoruz.
+                upd_tracks = list(tracker.dead_tracks)
+                if len(upd_tracks) > MAX_TRACKS_PER_UPDATE:
+                    upd_tracks.sort(key=lambda t: len(t.frame_ids), reverse=True)
+                    upd_tracks = upd_tracks[:MAX_TRACKS_PER_UPDATE]
+
+                msckf.update(upd_tracks)
                 msckf.prune_cam_states(MAX_WINDOW)
             else:
                 # MODE == 'imu': kamera devre dışı. State'i yalnızca IMU
