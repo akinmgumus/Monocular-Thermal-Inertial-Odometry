@@ -1,136 +1,146 @@
-# Thermal Visual-Inertial Odometry (TVIO)
+# Monocular Thermal-Inertial Odometry (TIO)
 
-Monocular visual odometry pipeline for thermal camera imagery, built with ROS2 Humble and OpenCV. Evaluated on the [FireStereo](https://github.com/CMU-Wilderness/FireStereo) dataset.
+Monocular MSCKF-based thermal-inertial odometry, evaluated across an RGB sanity-check baseline and three thermal datasets spanning indoor/outdoor flight and ground-vehicle driving.
 
-## Project Structure
+This is the codebase for an M.Sc. thesis. The contribution is not a new algorithm but a reproducible thermal-TIO evaluation harness that decouples three layers — preprocessing, front-end (KLT / ORB), and back-end (MSCKF) — and runs the same filter against multiple datasets with a single shared parameter set, so that differences in tracking performance are attributable to the data rather than to per-dataset tuning.
+
+## Quick start
+
+```bash
+# Python environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e src/thermal_vo
+
+# Choose a dataset, extract its bag to flat layout, then run the test script.
+# Example for ROVTIO:
+python3 scripts/extract_rovtio_bag.py \
+    --bag-dir ~/Downloads/alt1 \
+    --out ~/rovtio_data/processed/alt1
+
+python3 scripts/test_msckf_tio_rovtio.py
+```
+
+Each test script propagates the MSCKF over the whole run and, at the end, computes ATE / RPE / survival-time / filter-consistency metrics, saves a trajectory figure and a diagnostics figure, and appends one row to `results/all_runs.csv` for cross-dataset comparison.
+
+### Configuration (environment variables)
+
+Every test script shares the same knobs, read at import time:
+
+| Variable | Values | Meaning |
+|---|---|---|
+| `TVIO_METHOD` | `orb` (default) / `klt` | feature front-end |
+| `TVIO_USE_CLAHE` | `0` / `1` | contrast enhancement on/off |
+| `TVIO_DL_VER` | `1` / `2` | preprocessing order: `1` = CLAHE→normalise, `2` = normalise→CLAHE (adopted) |
+| `TVIO_LIVE_PLOT` | `0` (default) / `1` | live-updating matplotlib view vs. silent run + saved PNG |
+
+```bash
+TVIO_METHOD=klt TVIO_USE_CLAHE=1 TVIO_DL_VER=2 python3 scripts/test_msckf_tio_sthereo.py
+```
+
+`scripts/run_all_tests.py` sweeps a fixed set of (method, CLAHE, ordering) permutations across every dataset in one go.
+
+## Repository layout
 
 ```
 tvio_ws/
-├── src/vo_baseline/          # ROS2 C++ package
-│   └── src/
-│       ├── image_publisher_node.cpp            # Reads 16-bit thermal PNGs, publishes to ROS topic
-│       ├── thermal_preprocessor_node.cpp       # CLAHE preprocessing (16-bit → 8-bit)
-│       ├── orb_vo_node.cpp                     # ORB feature matching + monocular VO
-│       ├── orb_tracker_node.cpp                # Simple ORB detection test node
-│       └── *_explained.md                      # Line-by-line code explanations (Turkish)
 ├── scripts/
-│   ├── evaluate_trajectory.py                  # VO vs GT comparison (Sim(3) alignment, ATE)
-│   ├── visualize_preprocessing.py              # Raw vs Normalized vs CLAHE comparison
-│   └── visualize_orb_matching.py               # ORB feature matching visualization
-└── results/                                    # Output plots
+│   ├── extract_firestereo_bag.py      # ROS1 .bag → flat layout (PNG + IMU CSV + GT)
+│   ├── extract_rovtio_bag.py
+│   ├── extract_voxlbag.py
+│   ├── test_msckf_vio_euroc.py        # RGB visual-inertial baseline (mocap GT) — sanity check, not thermal
+│   ├── test_msckf_tio_firestereo.py   # Outdoor monocular thermal (LiDAR-inertial pseudo-GT)
+│   ├── test_msckf_tio_rovtio.py       # Indoor thermal (Vicon GT)
+│   ├── test_msckf_tio_sthereo.py      # Vehicle thermal (local-pose reference)
+│   ├── test_msckf_tio_voxlbag.py      # Outdoor drone thermal (PX4 EKF2 reference; excluded from
+│   │                                   #   the thesis's core results — unresolved IMU axis convention)
+│   ├── run_all_tests.py               # sweeps (front-end × CLAHE × ordering) across datasets
+│   ├── evo_eval.py                    # regen: recompute ATE/RPE (evo) + figures from a saved
+│   │                                   #   trajectory .txt, without re-running the filter
+│   ├── build_result_tables.py         # recomputes metrics for a fixed run list and emits LaTeX tables
+│   └── fig_*.py                       # figure-generation scripts for specific analyses
+│
+├── src/thermal_vo/
+│   ├── setup.py
+│   └── thermal_vo/
+│       ├── config_euroc.py            # per-dataset calibration + IMU noise + GT loader
+│       ├── config_firestereo.py
+│       ├── config_rovtio.py
+│       ├── config_sthereo.py
+│       ├── config_voxlbag.py
+│       ├── common_params.py           # shared front-end/back-end parameters (single source for all datasets)
+│       ├── dataloader.py              # ThermalDataLoader + IMULoader + VIOSequencer (CLAHE → normalise)
+│       ├── dataloader2.py             # same, with normalise → CLAHE (the adopted ordering)
+│       ├── klt.py                     # KLT optical-flow tracker (thermal-tuned)
+│       ├── orb.py                     # ORB descriptor tracker, grid-distributed (thermal-tuned)
+│       ├── msckf.py                   # MSCKF filter: predict / augment / sequential update / prune, with FEJ
+│       └── evaluation.py              # ATE (posyaw 4-DOF) / RPE (evo) / survival / NIS, plots, CSV
+│
+├── results/                           # generated (gitignored): trajectories, plots, CSV, divergence marks
+├── data/                              # raw dataset bags (gitignored)
+├── requirements.txt
+└── .gitignore
 ```
 
-## Thermal VO Baseline
-
-### Pipeline
+## Pipeline overview
 
 ```
-16-bit Thermal PNG → image_publisher_node → /camera/thermal/image_raw
-                                                      ↓
-                                        thermal_preprocessor_node
-                                        (normalize + CLAHE)
-                                                      ↓
-                                          /camera/thermal/image_clahe
-                                                      ↓
-                                              orb_vo_node
-                                        (ORB → BFMatcher → Essential Matrix
-                                         → recoverPose → pose accumulation)
-                                                      ↓
-                                          /vo/odometry, /vo/path
-                                          + TUM trajectory file
+Thermal PNG ─┐                          ┌─ KLT optical flow ─┐
+             ├─ ThermalDataLoader        │                    │
+IMU CSV   ─┐ │  (undistort + denoise +  ─┤                    │
+           └─┤   normalise + CLAHE)      └─ ORB descriptor ───┤
+GT        ───┤                                                │
+             │           active / dead feature tracks          │
+             │                                                ▼
+             │                                    ┌── MSCKF back-end ──┐
+             │                                    │ predict  (IMU, FEJ)│
+             ▼                                    │ augment_state      │
+  VIOSequencer (chronological IMU + cam events) ─►│ triangulate (GN)   │
+                                                  │ parallax + χ² gates│
+                                                  │ sequential EKF upd.│
+                                                  │ prune cam_states   │
+                                                  └────────┬───────────┘
+                                                           ▼
+                                              {pose, velocity, biases}
+                                                           │
+                                                           ▼
+                                          thermal_vo.evaluation
+                                          (posyaw 4-DOF ATE, evo RPE,
+                                           survival time, NIS/df,
+                                           trajectory + diagnostics
+                                           figures, append to CSV)
 ```
 
-### Preprocessing
+Two back-end design choices worth calling out:
+- **FEJ (First-Estimate Jacobians)**: every Jacobian is linearised at each state's frozen first estimate while the residual uses the current estimate, which keeps the unobservable directions (global position and yaw) consistent and stops a spurious yaw-drift feedback loop that a naive EKF-MSCKF exhibits.
+- **Sequential per-track update**: instead of stacking every accepted track into one giant measurement and applying a single Kalman gain, each track updates the covariance individually. Batching hundreds of tracks in one step was found to shrink the covariance so aggressively that the next update's χ² gate rejected everything (a "chi-square cascade"), collapsing the filter to pure IMU dead-reckoning.
 
-16-bit thermal images are converted to 8-bit using min-max normalization followed by CLAHE (Contrast Limited Adaptive Histogram Equalization, clipLimit=2.0, tileGrid=8x8). This enhances local contrast while suppressing noise, which is critical for feature detection on low-texture thermal imagery.
+## Metrics (reported per run)
 
-![Preprocessing Comparison](results/preprocessing_comparison.png)
+| Metric | Definition |
+|---|---|
+| ATE (full / tracking-window) | Absolute trajectory error, RMS of position residuals after 4-DOF (position + yaw) alignment — the correct convention for VIO/TIO, since roll/pitch are observable via gravity and scale via the accelerometer. Reported both over the whole run and over the manually identified tracking window `[settle, divergence]` |
+| RPE | Relative pose error (translation only), computed with `evo` over consecutive 1-metre sub-segments of travelled distance — a distance-normalised, alignment-invariant metric, reported in m/m |
+| Survival time | Time from run start to the divergence instant (manually identified from the trajectory/error plots; see `results/divergence_marks.csv`) |
+| NIS/df | Time-averaged normalised innovation squared per degree of freedom, over χ²-gate-accepted tracks — ≈1 indicates a consistent filter |
+| used/in | Fraction of candidate tracks accepted by the χ² gate — a coarser filter-consistency proxy |
+| avg active / avg used tracks | Front-end health: tracks currently followed vs. tracks actually incorporated per update |
 
-### Feature Extraction & Matching
+All metrics are written to `results/all_runs.csv` for cross-dataset table generation (`build_result_tables.py`).
 
-ORB (1000 keypoints) with BFMatcher (Hamming distance, cross-check). Best 60% of matches are kept after distance-based sorting. Lens distortion is corrected before geometric estimation.
+## Datasets
 
-![ORB Matching](results/orb_matching.png)
+| Dataset | Modality | GT type | Platform | Where to obtain |
+|---|---|---|---|---|
+| EuRoC MH_03_medium | 8-bit grayscale (visible) | Vicon mocap | UAV indoor | https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets |
+| FIReStereo frick_1 | 16-bit thermal (Boson+) | LiDAR-inertial (pseudo-GT) | UAV outdoor wildfire | https://github.com/CMU-Wilderness/FireStereo |
+| ROVTIO alt1 | 16-bit thermal (Tau2) | Vicon mocap | UAV indoor | https://huggingface.co/datasets/ntnu-arl/rovtio |
+| SThereo valley_evening | 14-bit thermal | Local-pose (pseudo-GT) | Ground vehicle | https://sites.google.com/view/sthereo |
+| VOXL Starling 2 Max (voxlbag) | 8-bit thermal (Boson+, H.264-decoded) | PX4 EKF2 / GPS | UAV outdoor | private bag, not publicly released |
 
-### Pose Estimation
+EuRoC is a visible-light, non-thermal baseline: it validates that the MSCKF back-end itself is correct (RQ1), so that any degradation seen on the thermal datasets is attributable to the thermal modality rather than to an implementation fault. The VOXL bag is integrated in the harness but excluded from the thesis's core cross-dataset results, owing to an unresolved IMU axis-convention discrepancy.
 
-- `findEssentialMat` (RANSAC, confidence=0.999) computes the Essential Matrix
-- `recoverPose` extracts rotation and translation (unit scale)
-- Cumulative pose: `T_world = T_world * T_relative`
+## License
 
-### Camera Parameters
-
-From `firestereo.yaml` (radtan distortion model):
-| Parameter | Value |
-|-----------|-------|
-| fx | 406.33 |
-| fy | 406.95 |
-| cx | 311.51 |
-| cy | 241.76 |
-| k1, k2 | -0.3495, 0.1038 |
-| p1, p2 | -0.0001474, -0.0001834 |
-
-### Evaluation
-
-Ground truth from LiDAR-SLAM reconstruction (`reconstruction/hawkins_run4_car/traj.txt`). Trajectories are aligned using Sim(3) (Umeyama method) to account for monocular scale ambiguity.
-
-**Results on hawkins_4:**
-
-| Metric | Value |
-|--------|-------|
-| Matched Poses | 1531 |
-| Scale Factor | 0.1013 |
-| ATE RMSE | 6.92 m |
-| ATE Mean | 6.17 m |
-| ATE Median | 6.17 m |
-| ATE Std | 3.13 m |
-| ATE Max | 11.74 m |
-
-![Trajectory Comparison](results/trajectory_comparison.png)
-
-### Known Limitations
-
-- **Scale ambiguity**: Monocular VO cannot recover absolute scale. Translation vectors are unit length.
-- **Rotation sensitivity**: Drift accumulates significantly during rotational motions — a fundamental limitation of monocular VO with Essential Matrix decomposition.
-- **Low texture**: Thermal images have fewer distinctive features compared to RGB, leading to fewer reliable matches.
-
-## Build & Run
-
-### Prerequisites
-- ROS2 Humble
-- OpenCV 4.x
-- cv_bridge
-
-### Build
-```bash
-cd ~/tvio_ws
-colcon build
-source install/setup.bash
-```
-
-### Run (3 terminals)
-```bash
-# Terminal 1: Publish images
-ros2 run vo_baseline image_publisher_node --ros-args \
-  -p image_dir:=/path/to/firestereo/hawkins_4/img_left \
-  -p timestamp_file:=/path/to/firestereo/hawkins_4/timestamps.txt
-
-# Terminal 2: Preprocessor
-ros2 run vo_baseline thermal_preprocessor_node
-
-# Terminal 3: Visual Odometry
-ros2 run vo_baseline orb_vo_node
-```
-
-### Evaluate
-```bash
-python3 scripts/evaluate_trajectory.py
-```
-
-## Dataset
-
-[FireStereo](https://github.com/CMU-Wilderness/FireStereo) — Forest infrared stereo dataset for UAS depth perception in visually degraded environments. Sequence used: `hawkins_4` (2478 thermal images, 640x512, 16-bit).
-
----
-
-## Thermal VIO
+See `LICENSE`.

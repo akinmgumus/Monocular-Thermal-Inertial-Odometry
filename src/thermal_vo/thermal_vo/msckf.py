@@ -63,7 +63,11 @@ class CamState:
         self.frame_id = frame_id
         self.rot = rot      # current — gets updated each EKF step
         self.pos = pos
-        # FEJ snapshot — frozen at augmentation, never modified
+        # [FEJ] snapshot — the camera pose at augmentation time, never changes
+        # afterwards. This is the cam state's own "first estimate", kept
+        # INDEPENDENT of the IMU's nominal_rot_fej anchor. (Option 3 — chaining
+        # it to the IMU-FEJ anchor — was tried but performed far worse
+        # empirically: 100 km -> 580 km. Reverted.)
         self.rot_fej = rot
         self.pos_fej = pos
 
@@ -82,6 +86,26 @@ class MSCKF:
 
     World frame is z-up: gravity = +9.81 ẑ, and a stationary IMU reads +g
     along its +z body axis. With this convention,  R·a_body − g  is zero at rest.
+
+    --- FEJ (First-Estimate Jacobians) — design map ---
+    FEJ is a cross-cutting principle, not a single block: every Jacobian is
+    linearized at each state's FROZEN first estimate, while the residual and the
+    nominal state stay on the CURRENT estimate. This keeps the unobservable
+    directions (global position and yaw) consistent and stops the spurious
+    yaw-drift loop of plain EKF-MSCKF. All FEJ touch-points are tagged `# [FEJ]`
+    (grep them) and each lives where its Jacobian is built:
+
+      1. predict()                 — F-matrix velocity blocks use
+                                      `nominal_rot_fej` (frozen), not `nominal_rot`.
+      2. augment_state()           — J_imu lever-arm uses `R_world_imu_fej`, and
+                                      the new CamState freezes `rot_fej / pos_fej`.
+      3. _compute_track_jacobians()— H_x / H_f use `cs.rot_fej / cs.pos_fej` and
+                                      the FEJ-anchored landmark `p_f_world_fej`,
+                                      while the residual uses `cs.rot / cs.pos`.
+
+    Frozen anchors: `nominal_rot_fej` (IMU rotation only, refreshed once after
+    static init) and per-camera `rot_fej / pos_fej` (kept INDEPENDENT of the IMU
+    anchor — chaining them, "Option 3", diverged badly and was reverted).
     """
 
     def __init__(self,
@@ -103,6 +127,7 @@ class MSCKF:
         self.min_depth        = float(min_depth)
         self.max_depth        = float(max_depth)
         self.gn_max_iter      = int(gn_max_iter)
+        self.chi2_alpha       = float(chi2_alpha)   # kept for run metadata/logging
         # Pre-compute chi-square thresholds for typical track DOF. After
         # null-space projection a track contributes (2M - 3) residual rows,
         # so for M ∈ [2, 20] DOF ranges 1..37.
@@ -119,11 +144,40 @@ class MSCKF:
         self.nominal_pos = np.zeros(3)
         self.nominal_vel = np.zeros(3)
         self.nominal_rot = R.from_quat([0, 0, 0, 1])   # scipy quat layout: [x, y, z, w]
+        # IMU-state FEJ anchor (rotation only): the F matrix in predict() and
+        # the J_imu lever-arm in augment_state() are linearized at this FROZEN
+        # rotation. It is refreshed after the boxplus in update(); it stays
+        # constant across predicts in between. This prevents an observability
+        # inconsistency (spurious information accumulating in global yaw).
+        # (nominal_pos_fej + chaining the camera FEJ to it were tried but
+        # backfired empirically — reverted; each cam state keeps its own
+        # independent "first estimate".)
+        self.nominal_rot_fej = self.nominal_rot
 
         self.bg = np.zeros(3)
         self.ba = np.zeros(3)
 
         self.gravity = np.array([0.0, 0.0, 9.81])
+
+        # --- run-time instrumentation (accumulated across all update() calls,
+        #     consumed by thermal_vo.evaluation for filter-consistency stats)
+        self.cum_n_in    = 0    # total tracks reaching update across the run
+        self.cum_n_used  = 0    # total tracks that passed chi² gate & updated P
+        self.cum_n_chi2  = 0    # total tracks rejected by Mahalanobis gate
+        self.n_updates   = 0    # number of update() calls
+        self.last_n_in   = 0    # snapshot of the most recent update
+        self.last_n_used = 0
+        # NIS consistency: accumulate the innovation statistic d² = r_oᵀ S⁻¹ r_o
+        # and its DOF over accepted (inlier) tracks. The time-averaged NIS/df
+        # should sit near 1 for a consistent filter; ≫1 → overconfident (P too
+        # small), ≪1 → conservative. Reported as `mean_nis` at run end.
+        self.cum_nis     = 0.0  # Σ d² over accepted tracks
+        self.cum_nis_df  = 0    # Σ df over accepted tracks
+        # Per-track NIS log for segment-wise consistency analysis:
+        # (timestamp, d², df) per accepted track. `self.now` is set by the
+        # event loop before each camera update (None if the script doesn't).
+        self.now         = None
+        self.nis_log     = []
 
         # 2. ERROR-STATE COVARIANCE (per-block initial uncertainty)
         self.P_matrix = np.diag(np.concatenate([
@@ -187,6 +241,10 @@ class MSCKF:
             angle = np.arctan2(axis_n, np.dot(g_b_unit, z_world))
             self.nominal_rot = R.from_rotvec(axis / axis_n * angle)
 
+        # Refresh the IMU-state FEJ anchor after static init: predict and
+        # augment will linearize at this rotation until the first update.
+        self.nominal_rot_fej = self.nominal_rot
+
         self.nominal_pos = np.zeros(3)
         self.nominal_vel = np.zeros(3)
         self.ba          = np.zeros(3)
@@ -210,8 +268,12 @@ class MSCKF:
         rot_new = self.nominal_rot * dq
 
         # Velocity / position kinematics in world frame
-        rot_matrix  = self.nominal_rot.as_matrix()
-        accel_world = rot_matrix @ accel
+        rot_matrix     = self.nominal_rot.as_matrix()       # for nominal integration
+        # [FEJ] IMU-state: the R-dependent blocks of F, used in covariance
+        # propagation, are linearized at the frozen FEJ rotation. The nominal
+        # velocity/position integration still uses the CURRENT rot_matrix.
+        rot_fej_matrix = self.nominal_rot_fej.as_matrix()    # for covariance / F matrix
+        accel_world    = rot_matrix @ accel
 
         vel_new = self.nominal_vel + (accel_world - self.gravity) * dt
         pos_new = (self.nominal_pos
@@ -228,8 +290,8 @@ class MSCKF:
         F_matrix[0:3,   3:6]  = -I_3
 
         # Velocity error: dδv/dt = -R [a×] δθ - R δb_a
-        F_matrix[6:9,   0:3]  = -rot_matrix @ skew(accel)
-        F_matrix[6:9,   9:12] = -rot_matrix
+        F_matrix[6:9,   0:3]  = -rot_fej_matrix @ skew(accel)   # [FEJ]
+        F_matrix[6:9,   9:12] = -rot_fej_matrix                 # [FEJ]
 
         # Position error: dδp/dt = δv
         F_matrix[12:15, 6:9]  = I_3
@@ -257,10 +319,10 @@ class MSCKF:
         self.nominal_vel = vel_new
         self.nominal_pos = pos_new
 
-        # ── TANI: P büyüme eğrisi ────────────────────────────────────────
-        # Her 50 predict'te bir P'nin 1σ değerlerini bas. Amaç: ilk kamera
-        # update'inden ÖNCE P nasıl büyüyor — düzgün/yavaş mı (P dürüst)
-        # yoksa sıçrıyor mu (predict kovaryans bug'ı). Sorun bulununca sil.
+        # ── DIAGNOSTIC: covariance growth curve ──────────────────────────
+        # Print P's 1-sigma values every 50 predicts. Purpose: see how P grows
+        # BEFORE the first camera update — smoothly/slowly (P is honest) or
+        # jumping (a bug in the predict covariance). Remove once resolved.
         self._diag_predict_count = getattr(self, '_diag_predict_count', 0) + 1
         if self._diag_predict_count % 50 == 0:
             Pd = np.sqrt(np.clip(np.diag(self.P_matrix), 0.0, None))
@@ -288,16 +350,18 @@ class MSCKF:
             R_imu_cam = T_cam_imu[:3,:3].T
             t_imu_cam = -R_imu_cam @ T_cam_imu[:3,3]
         """
-        R_world_imu = self.nominal_rot.as_matrix()
+        R_world_imu     = self.nominal_rot.as_matrix()
+        R_world_imu_fej = self.nominal_rot_fej.as_matrix()  # [FEJ] for the J_imu lever-arm
 
         # ---- STEP 1: COMPUTE THE CAMERA POSE IN THE WORLD FRAME ----
-        # R_world_cam = R_world_imu · R_imu_cam
+        # R_world_cam = R_world_imu · R_imu_cam   (current best estimate)
         rot_cam = self.nominal_rot * R_imu_cam
+        pos_cam = self.nominal_pos + R_world_imu @ t_imu_cam
 
-        # p_world_cam = p_world_imu + R_world_imu · t_imu_cam
-        lever_arm_world = R_world_imu @ t_imu_cam
-        pos_cam = self.nominal_pos + lever_arm_world
-
+        # Inside CamState, cs.rot_fej = rot_cam and cs.pos_fej = pos_cam are
+        # set — the cam state's "first estimate" is the camera pose at the
+        # moment of augmentation. (The "derive it from the IMU-FEJ anchor"
+        # approach tried in Option 3 was reverted.)
         self.cam_states.append(CamState(frame_id, rot_cam, pos_cam))
 
         # ---- STEP 2: BUILD THE AUGMENTATION JACOBIAN ----
@@ -312,9 +376,10 @@ class MSCKF:
         # ∂δp_cam / ∂δp_imu = I
         J_imu[3:6, 12:15] = np.eye(3)
 
-        # ∂δp_cam / ∂δθ_imu = -R_world_imu · [t_imu_cam]×   (lever-arm coupling)
-        # A pure rotation of the IMU swings the camera around its lever arm.
-        J_imu[3:6, 0:3] = -R_world_imu @ skew(t_imu_cam)
+        # ∂δp_cam / ∂δθ_imu = -R_world_imu_fej · [t_imu_cam]×   (lever-arm)
+        # IMU-state FEJ: the R-dependent term is linearized using the
+        # R_world_imu_fej computed above (the same anchor used by the cam-FEJ chain).
+        J_imu[3:6, 0:3] = -R_world_imu_fej @ skew(t_imu_cam)
 
         # Old camera states do not influence the new one — pad J_full with zeros.
         current_size = self.P_matrix.shape[0]
@@ -429,6 +494,11 @@ class MSCKF:
             H_f: (2M', 3)                  — derivative w.r.t. landmark position
             r  : (2M',)                    — residual z - h(x̂)
 
+        H_x meaning: the derivative of the measurement function w.r.t. the full error state (IMU + all camera states). 
+        H_f meaning: the derivative of the measurement function w.r.t. the landmark position in the world frame.
+        r meaning: the difference between the observed normalized pixel coordinates and the predicted normalized pixel coordinates based on the current estimate of the landmark position and camera poses.
+            
+
         Only the 6 columns corresponding to each observing cam state are nonzero
         in H_x; the IMU-state columns (0:15) and other cam-state columns stay 0.
         Observations whose frame_id is not in the current sliding window (e.g.
@@ -451,13 +521,14 @@ class MSCKF:
         pixels = np.array([kp for _, kp in valid], dtype=np.float64)
         z      = self.pixels_to_normalized(pixels)   # (M, 2)
 
-        # ---- FEJ ANCHORING ----
-        # p_f_world, GN tarafından kameraların GÜNCEL pozlarına göre üçgenlendi.
-        # H_x/H_f ise FEJ (dondurulmuş) pozlarda lineerize ediliyor. Güncel
-        # landmark'ı doğrudan FEJ pozlara iz düşürmek geometrik tutarsızlık
-        # yaratır → yaw gözlemlenebilirliği bozulur → sahte attitude düzeltmesi.
-        # Çözüm: landmark'ı çapa kameranın (valid[0]) güncel→FEJ rijit
-        # dönüşümüyle FEJ dünyasına demirle, Jacobian'larda onu kullan.
+        # ---- [FEJ] ANCHORING ----
+        # p_f_world was triangulated by GN against the cameras' CURRENT poses,
+        # while H_x/H_f are linearized at the FEJ (frozen) poses. Projecting
+        # the current landmark directly onto the FEJ poses would create a
+        # geometric inconsistency -> breaks yaw observability -> spurious
+        # attitude correction. Fix: re-anchor the landmark into the FEJ world
+        # via the anchor camera's (valid[0]) current -> FEJ rigid transform,
+        # and use that anchored point in the Jacobians.
         idx0          = valid[0][0]
         cs0           = self.cam_states[idx0]
         p_f_c0        = cs0.rot.as_matrix().T @ (p_f_world - cs0.pos)
@@ -474,7 +545,7 @@ class MSCKF:
         for (idx, _), z_k in zip(valid, z):
             cs = self.cam_states[idx]
 
-            # ---- FEJ pose: linearize Jacobian at the FROZEN first estimate ----
+            # ---- [FEJ] pose: linearize Jacobian at the FROZEN first estimate ----
             R_wc_fej    = cs.rot_fej.as_matrix()
             R_cw_fej    = R_wc_fej.T
             p_f_cam_fej = R_cw_fej @ (p_f_world_fej - cs.pos_fej)
@@ -628,6 +699,14 @@ class MSCKF:
         X_a_refined = np.array([alpha * depth, beta * depth, depth])
         return R_wa @ X_a_refined + p_a
 
+    @property
+    def mean_nis(self):
+        """Time-averaged NIS normalised by DOF over accepted tracks (≈1 if the
+        filter is consistent). Returns None before any track has been used."""
+        if self.cum_nis_df == 0:
+            return None
+        return self.cum_nis / self.cum_nis_df
+
     def _track_mahalanobis_sq(self, H_o, r_o, sigma_norm):
         """
         Squared Mahalanobis distance for one track's null-space-projected
@@ -668,6 +747,58 @@ class MSCKF:
 
         self.P_matrix = self.P_matrix[np.ix_(keep, keep)]
         self.cam_states.pop(idx)
+
+    # ------------------------------------------------------------------
+    # ZUPT — Zero-velocity Update
+    # ------------------------------------------------------------------
+    def zero_velocity_update(self, sigma_zupt=0.01):
+        """Called while the drone/platform is stationary — an EKF update with
+        a pseudo 'velocity = 0' measurement. Prevents IMU bias drift during
+        hover/rest windows where the camera cannot update because parallax is
+        zero.
+
+        Mechanism:
+          z = [0, 0, 0]  ("you are at rest, velocity is zero")
+          H = (3, n_state) selector matrix picking out the velocity block
+          r = -nominal_vel  (residual: observed zero minus the filter's estimate)
+          R = sigma_zupt^2 * I_3  (how much we trust the stationarity assumption)
+        Followed by the standard EKF update + Joseph-form covariance + boxplus
+        + IMU-FEJ anchor refresh.
+
+        The caller is responsible for stationary detection (e.g. an IMU
+        energy threshold). A false trigger during motion applies a spurious
+        constraint and corrupts the filter.
+        """
+        n_state = self.P_matrix.shape[0]
+        H = np.zeros((3, n_state))
+        H[:, 6:9] = np.eye(3)                # select the velocity block
+
+        r = -self.nominal_vel.copy()         # 0 - current vel
+        R_meas = (sigma_zupt ** 2) * np.eye(3)
+
+        S = H @ self.P_matrix @ H.T + R_meas
+        K_gain = self.P_matrix @ H.T @ np.linalg.solve(S, np.eye(3))
+        delta_x = K_gain @ r
+
+        # Boxplus — same convention as the camera update
+        self.nominal_rot  = self.nominal_rot * R.from_rotvec(delta_x[0:3])
+        self.bg          += delta_x[3:6]
+        self.nominal_vel += delta_x[6:9]
+        self.ba          += delta_x[9:12]
+        self.nominal_pos += delta_x[12:15]
+        for i, cs in enumerate(self.cam_states):
+            base = 15 + 6 * i
+            cs.rot = cs.rot * R.from_rotvec(delta_x[base:base + 3])
+            cs.pos = cs.pos + delta_x[base + 3:base + 6]
+
+        # Joseph-form covariance update
+        I_full = np.eye(n_state)
+        I_KH = I_full - K_gain @ H
+        P_new = I_KH @ self.P_matrix @ I_KH.T + K_gain @ R_meas @ K_gain.T
+        self.P_matrix = 0.5 * (P_new + P_new.T)
+
+        # Refresh the IMU-state FEJ anchor (after the boxplus)
+        self.nominal_rot_fej = self.nominal_rot
 
     # def update(self, retired_tracks):
     #     """No gates. DLT triangulation + Mourikis null-space projection only."""
@@ -730,9 +861,10 @@ class MSCKF:
     #     delta_x = K_gain @ r
 
     #     # --- BIAS LOCK ---
-    #     # Camera update'leri bias'ı düzeltmesin. Bias static init'te kestirildi,
-    #     # kamera observations'ı attitude/vel/pos'a kanalize et — bias absorbing
-    #     # observability lock-in'i kırmak için.
+    #     # Camera updates should not correct the bias. The bias was estimated
+    #     # at static init; channel the camera observations into
+    #     # attitude/vel/pos instead, to break the bias-absorbing
+    #     # observability lock-in.
     #     # delta_x[3:6]   = 0.0   # δb_g
     #     # delta_x[9:12]  = 0.0   # δb_a
 
@@ -757,14 +889,14 @@ class MSCKF:
     # =================================================================
     # LEGACY: batched EKF update (kept for reference)
     # =================================================================
-    # Önceden kullandığımız "tek seferde tüm track'leri stack'leyip uygula"
-    # versiyonu. Termal'de KLT ile büyük dead_tracks dump'larında (örn.
-    # marginalize_at_prune sonrası 100-200 track aynı anda) P_matrix tek
-    # adımda dramatik küçülüyordu → sonraki update'lerde chi2 cascade →
-    # filter ölçümleri reject etmeye başlıyor → dead-reckoning + drift.
+    # The previously used "stack all tracks at once and apply" version. On
+    # thermal data with KLT, large dead_tracks dumps (e.g. 100-200 tracks at
+    # once after marginalize_at_prune) shrank P_matrix dramatically in a
+    # single step -> a chi2 cascade on subsequent updates -> the filter
+    # starts rejecting measurements -> dead-reckoning + drift.
     #
-    # Yerine SEQUENTIAL update'e geçtik (aşağıda). Bu blok referans/karşılaştırma
-    # için yorum olarak duruyor.
+    # Replaced by the SEQUENTIAL update below. This block is kept, commented
+    # out, for reference/comparison.
     # -----------------------------------------------------------------
     # def update(self, retired_tracks):
     #     if not retired_tracks:
@@ -816,7 +948,7 @@ class MSCKF:
     #     S  = H @ P @ H.T + R_meas
     #     K_gain = P @ H.T @ np.linalg.solve(S, np.eye(S.shape[0]))
     #     delta_x = K_gain @ r
-    #     # ... boxplus + Joseph (tek seferde)
+    #     # ... boxplus + Joseph (all at once)
     # =================================================================
 
 
@@ -824,115 +956,128 @@ class MSCKF:
         """
         SEQUENTIAL EKF measurement update.
 
-        Mourikis 2007'nin gating pipeline'ı (1-7) aynı, AMA accepted
-        (H_o, r_o) blokları tek bir dev (H, r)'de stack'lenip uygulanmıyor —
-        her track tek tek, kendi küçük Kalman gain'i ile P_matrix'i adım
-        adım güncelliyor.
+        The Mourikis 2007 gating pipeline (1-7) is the same, BUT the accepted
+        (H_o, r_o) blocks are not stacked into one giant (H, r) and applied at
+        once — each track updates P_matrix individually, one small Kalman
+        gain at a time.
 
         ----------------------------------------------------------------
-        NİYE SEQUENTIAL?
+        WHY SEQUENTIAL?
         ----------------------------------------------------------------
-        Batched update'te bir frame'de 100-200 track marjinalize olursa:
-            stacked H : (Σ df, n_state)
-            S         : (Σ df, Σ df)
-            K_gain    : (n_state, Σ df)
-            ΔP        : K · H · P  → DEV bir tek-adım korreksiyonu
+        In the batched update, if 100-200 tracks are marginalised in one
+        frame:
+            stacked H : (sum df, n_state)
+            S         : (sum df, sum df)
+            K_gain    : (n_state, sum df)
+            dP        : K . H . P  -> a HUGE single-step correction
             P_new     : (I - KH) P (I - KH)^T + K R K^T
 
-        Σ df ~ 1000-5000'e ulaşınca, P_new diagonal'ı 10⁴ kat düşer.
-        Bir sonraki update'in chi2 gate'i S = H P H^T + R'yi hesaplarken
-        P çok küçük olduğu için S tiny, mahalanobis^2 = r^T S^-1 r tavan
-        yapar, normal innovation bile dış olarak reddedilir → "chi2 cascade"
-        → filter tüm ölçümleri reject eder → IMU dead-reckoning'e döner →
-        bias drift'i kontrol edilemez → trajektörü patlatır.
+        Once sum df reaches ~1000-5000, P_new's diagonal drops by ~10^4x.
+        The next update's chi2 gate computes S = H P H^T + R with P now tiny,
+        so S is tiny too, mahalanobis^2 = r^T S^-1 r blows up, and even a
+        normal innovation is rejected as an outlier -> a "chi2 cascade" ->
+        the filter rejects every measurement -> falls back to IMU
+        dead-reckoning -> bias drift goes unchecked -> the trajectory
+        blows up.
 
-        Sequential update'te:
-            * Her track ayrı küçük K_gain getirir (df ~ 1-37).
-            * P kademeli küçülür — bir adımda 10² kat değil, yüz küçük adımda
-              kontrollü şekilde.
-            * Joseph form her step'te symmetry + positive-definiteness korur.
-            * Bir kötü track diğerlerini etkileyemez (kendi adımıyla sınırlı).
+        In the sequential update:
+            * Each track contributes its own small K_gain (df ~ 1-37).
+            * P shrinks gradually — not by 10^2x in one step, but in a
+              hundred small, controlled steps.
+            * The Joseph form preserves symmetry + positive-definiteness at
+              every step.
+            * One bad track cannot affect the others (confined to its own
+              step).
 
         ----------------------------------------------------------------
-        MATEMATIK — PER-TRACK ADIM
+        MATH — PER-TRACK STEP
         ----------------------------------------------------------------
-        Bir track'in null-space projection sonrası ölçüm modeli:
-            r_o = H_o · δx + n_o,    cov(n_o) = R = σ² · I_df
+        A track's measurement model after null-space projection:
+            r_o = H_o . dx + n_o,    cov(n_o) = R = sigma^2 . I_df
 
-        EKF update bu track için:
-            S       = H_o · P · H_o^T + R              # (df × df) innovation cov
-            K       = P · H_o^T · S⁻¹                   # (n_state × df) Kalman gain
-            δx̂      = K · r_o                           # (n_state,) error-state correction
+        The EKF update for this track:
+            S       = H_o . P . H_o^T + R              # (df x df) innovation cov
+            K       = P . H_o^T . S^-1                  # (n_state x df) Kalman gain
+            dx_hat  = K . r_o                           # (n_state,) error-state correction
             P_new   = (I - K H_o) P (I - K H_o)^T       # Joseph form, positive-def stable
                     + K R K^T
 
-        Boxplus (⊞) ile nominal state'e uygula:
-            θ_imu  ← θ_imu ⊞ δθ̂_imu      (right-multiplicative quaternion update)
-            b_g    ← b_g + δb_g           (additive)
-            v      ← v   + δv             (additive)
-            b_a    ← b_a + δb_a           (additive)
-            p      ← p   + δp             (additive)
-            (her cam state için aynı şekilde)
+        Applied to the nominal state via boxplus:
+            theta_imu <- theta_imu (+) dtheta_hat_imu   (right-multiplicative quaternion update)
+            b_g       <- b_g + db_g                     (additive)
+            v         <- v   + dv                       (additive)
+            b_a       <- b_a + db_a                     (additive)
+            p         <- p   + dp                       (additive)
+            (same for every cam state)
 
         ----------------------------------------------------------------
-        PARAMETRELER (constructor'dan geliyor)
+        PARAMETERS (from the constructor)
         ----------------------------------------------------------------
-        pixel_noise_std    : px, normalized coords için σ = pixel_noise_std/fx
-                             Termal KLT için 3-6 makul (per-view drift'i de
-                             modellemek istediğimizden gerçek subpixel'in üstünde)
-        min_parallax_rad   : DLT ve null-space numerik kararlılığı için minimum
-                             bearing-ray spread. < 0.3° → triangulation çöker.
-        min_depth/max_depth: GN refinement bounds. min ~10cm (yakın engelleri
-                             dışla), max ~500m (sky/uzak landmark filtresi).
-        gn_max_iter        : İnverse-depth GN iterasyon limiti. 4-5 yeterli;
-                             küçük step'lerle exit early.
-        chi2_alpha         : Per-track Mahalanobis gate confidence. 0.99 →
-                             %1 yanlış-reject oranı. Daha gevşek (0.999) chi2
-                             cascade'i geciktirir ama outlier'lara açık olur.
+        pixel_noise_std    : px, for normalized coords sigma = pixel_noise_std/fx
+                             3-6 is reasonable for thermal KLT (above the true
+                             subpixel accuracy, since we also want to model
+                             per-view drift)
+        min_parallax_rad   : minimum bearing-ray spread for DLT and null-space
+                             numerical stability. < 0.3 deg -> triangulation
+                             collapses.
+        min_depth/max_depth: GN refinement bounds. min ~10cm (excludes nearby
+                             obstructions), max ~500m (filters sky/distant
+                             landmarks).
+        gn_max_iter        : inverse-depth GN iteration limit. 4-5 is enough;
+                             exits early on small steps.
+        chi2_alpha         : per-track Mahalanobis gate confidence. 0.99 -> a
+                             1% false-reject rate. Looser (0.999) delays the
+                             chi2 cascade but admits more outliers.
         """
         if not retired_tracks:
             return
         if self.K is None:
             raise RuntimeError("MSCKF.update() requires camera intrinsics K.")
 
-        # Normalized image-plane'de pixel noise std. Tüm Jacobian'lar K^-1 ile
-        # bearing'e geçtikten sonra hesaplandığı için R_meas de aynı çerçevede.
-        # fx ≈ K[0,0]; SThereo termal için ~414, FIReStereo için ~406.
+        # Pixel noise std on the normalized image plane. All Jacobians are
+        # computed after mapping through K^-1 to bearings, so R_meas is
+        # expressed in the same frame.
+        # fx ~ K[0,0]; ~414 for STheReo thermal, ~406 for FIReStereo.
         sigma_norm = self.pixel_noise_std / self.K[0, 0]
         sigma_norm_sq = sigma_norm ** 2
 
 
 
 
-        # ── TANI ENSTRÜMANTASYONU — HATA TESPİTİ AMAÇLI EKLENDİ ──────────────
-        # Geçici tanı kodu. İlk 5 update çağrısında (a) ham reprojection
-        # residual'ini |z - ẑ| ve (b) uygulanan Δx düzeltmesini yazdırır.
-        # Amaç: kamera update'inin state'i ilk anlardan itibaren neden bozduğunu
-        # lokalize etmek —
-        #   büyük |r|              → geometri/extrinsic hatası (üçgenlenen
-        #                            landmark ölçüm pikseline düşmüyor)
-        #   küçük |r| ama büyük Δx → EKF update matematiği hatası (gain /
-        #                            null-space / kovaryans)
-        # Sorun bulununca: bu blok + aşağıdaki "_diag" kancaları silinmeli.
-        # Pencere: ilk 5 *track kabul eden* update. Boş (used=0) update'ler
-        # sayacı yakmasın — yoksa araç sabitken parallax gate'in hepsini elediği
-        # ilk kareler pencereyi tüketir, asıl bakmak istediğimiz update'ler
-        # diag'sız kalır. Sayaç update() sonunda, accepted doluysa artıyor.
+        # ── DIAGNOSTIC INSTRUMENTATION — ADDED FOR BUG-HUNTING ───────────────
+        # Temporary diagnostic code. On the first 5 update() calls, prints
+        # (a) the raw reprojection residual |z - z_hat| and (b) the applied
+        # delta-x correction. Purpose: localize why the camera update
+        # corrupts the state from the very first moments —
+        #   large |r|              -> a geometry/extrinsics error (the
+        #                              triangulated landmark doesn't land on
+        #                              the observed pixel)
+        #   small |r| but large dx -> an EKF update math error (gain /
+        #                              null-space / covariance)
+        # Once resolved: delete this block + the "_diag" hooks below.
+        # Window: the first 5 updates that *accept at least one track*. Empty
+        # (used=0) updates must not burn the counter — otherwise, while the
+        # platform is stationary and the parallax gate rejects everything,
+        # the first frames would exhaust the window and the updates we
+        # actually want to inspect would be left without diagnostics. The
+        # counter increments at the end of update(), only if accepted is
+        # non-empty.
         self._diag_done = getattr(self, '_diag_done', 0)
         _diag_on  = self._diag_done < 5
-        _diag_res = []   # accepted track'lerin ham residual vektörleri
-        _diag_geo = []   # accepted track başına (M, derinlik_m, parallax_deg)
+        _diag_res = []   # raw residual vectors of the accepted tracks
+        _diag_geo = []   # per accepted track: (M, depth_m, parallax_deg)
 
 
 
 
         # =============================================================
-        # PHASE 1 — Gating + linearization (state DEĞİŞMİYOR)
+        # PHASE 1 — Gating + linearization (state DOES NOT CHANGE)
         # =============================================================
-        # Tüm track'leri 7-aşamalı pipeline'dan geçir. Geçenlerin (H_o, r_o)
-        # bloklarını biriktir. State (nominal pose, bias, P) BURADA değişmiyor
-        # — linearization tek bir noktada (update başlangıcındaki state'te)
-        # yapılır, sonra Phase 2'de sequential apply edilir.
+        # Run every track through the 7-stage pipeline. Accumulate the
+        # (H_o, r_o) blocks of the ones that pass. The state (nominal pose,
+        # bias, P) does NOT change here — linearization happens at a single
+        # point (the state at the start of the update), then Phase 2 applies
+        # the tracks sequentially.
         accepted = []   # list of (H_o, r_o) tuples; r_o normalized residuals
 
         n_in        = len(retired_tracks)
@@ -944,8 +1089,9 @@ class MSCKF:
         n_chi2      = 0
 
         for track in retired_tracks:
-            # 1. Sliding window içindeki gözlemleri seç (eski cam state silinmiş
-            #    olabilir, bunlar artık MSCKF'e bağlanamaz).
+            # 1. Keep only observations inside the sliding window (the old
+            #    cam state may have been dropped, so these can no longer be
+            #    tied back to the MSCKF).
             valid = [(self._cam_state_index(fid), kp)
                      for fid, kp in zip(track.frame_ids, track.keypoints)]
             valid = [(idx, kp) for idx, kp in valid if idx is not None]
@@ -957,64 +1103,71 @@ class MSCKF:
             pixels   = np.array([kp for _, kp in valid], dtype=np.float64)
             norm_obs = self.pixels_to_normalized(pixels)
 
-            # 2. Parallax gate — bearing-ray spread çok düşükse DLT singular,
-            #    null-space projection sahte yönler üretir.
+            # 2. Parallax gate — if the bearing-ray spread is too small, DLT
+            #    is singular and the null-space projection produces spurious
+            #    directions.
             if self._max_parallax(cs_list, norm_obs) < self.min_parallax_rad:
                 n_parallax += 1
                 continue
 
-            # 3. DLT triangulation — linear, hızlı initial guess.
+            # 3. DLT triangulation — linear, fast initial guess.
             p_f = triangulate_dlt(norm_obs, cs_list)
             if p_f is None:
                 n_dlt += 1
                 continue
 
-            # 4. Inverse-depth GN — reprojection error minimize eden refine;
-            #    aynı zamanda min/max depth bound'larını içeride uygular.
+            # 4. Inverse-depth GN — refines by minimising reprojection error;
+            #    also applies the min/max depth bounds internally.
             p_f = self._gauss_newton_refine(p_f, cs_list, norm_obs)
             if p_f is None:
                 n_gn += 1
                 continue
 
             # 5. Per-view Jacobian: H_x (∂h/∂x_err), H_f (∂h/∂p_f), r = z - h.
-            #    FEJ aktif — Jacobian linearization cs.rot_fej/pos_fej'de.
+            #    FEJ active — Jacobian linearized at cs.rot_fej/pos_fej.
             jacs = self._compute_track_jacobians(track, p_f)
             if jacs is None:
                 n_jac += 1
                 continue
             H_x, H_f, r = jacs
 
-            # 6. Null-space projection: H_f'i ele (landmark'ı state'ten çıkar).
-            #    Sonuç: r_o = H_o · δx + n_o, df = 2M - 3 satır.
+            # 6. Null-space projection: eliminate H_f (removes the landmark
+            #    from the state). Result: r_o = H_o . dx + n_o, df = 2M - 3 rows.
             H_o, r_o = self._left_nullspace_project(H_x, H_f, r)
             df = H_o.shape[0]
             if df < 1:
                 continue
 
-            # 7. Chi-square gate. UYARI: bu CURRENT P üzerinden bakılıyor —
-            #    Phase 2'de henüz hiçbir update uygulanmadı. Sequential'da
-            #    ilerleyen track'ler için P küçülecek, ama gate'i tek başına
-            #    Phase 1'de değerlendirmek deterministic ve düzenli.
-            # TANI (Adım 3): chi2_enabled=False iken gate atlanır — chi2
-            # reddinin divergence mekanizmasının parçası olup olmadığını
-            # izole etmek için. Kalıcı değil.
+            # 7. Chi-square gate. NOTE: this looks at the CURRENT P — no
+            #    update has been applied yet in Phase 2. In the sequential
+            #    scheme P will shrink for later tracks, but evaluating the
+            #    gate against the single Phase-1 state is deterministic and
+            #    tidy.
+            # DIAGNOSTIC (Step 3): the gate is skipped when chi2_enabled=False
+            # — used to isolate whether chi2 rejection is part of the
+            # divergence mechanism. Not permanent.
             thresh = self._chi2_thresh.get(df) or float(_chi2_dist.ppf(0.95, df))
-            if getattr(self, 'chi2_enabled', True) and \
-                    self._track_mahalanobis_sq(H_o, r_o, sigma_norm) > thresh:
+            nis_d2 = self._track_mahalanobis_sq(H_o, r_o, sigma_norm)
+            if getattr(self, 'chi2_enabled', True) and nis_d2 > thresh:
                 n_chi2 += 1
                 continue
 
             accepted.append((H_o, r_o))
+            # [consistency] accumulate NIS over accepted (inlier) tracks.
+            self.cum_nis    += nis_d2
+            self.cum_nis_df += df
+            self.nis_log.append((self.now, float(nis_d2), int(df)))
 
 
 
 
 
-            if _diag_on:                       # TANI: ham residual + geometri sakla
+            if _diag_on:                       # DIAGNOSTIC: store raw residual + geometry
                 _diag_res.append(r)
-                # K patlamasının kök nedenini ayırmak için track geometrisi:
-                # derinlik (uzak feature → küçük H → büyük K) ve parallax
-                # (düşük parallax → belirsiz üçgenleme). cs_list[0] çapa kamera.
+                # Track geometry, to separate root causes of a K blow-up:
+                # depth (distant feature -> small H -> large K) and parallax
+                # (low parallax -> uncertain triangulation). cs_list[0] is the
+                # anchor camera.
                 cs0   = cs_list[0]
                 depth = float((cs0.rot.as_matrix().T @ (p_f - cs0.pos))[2])
                 prlx  = np.degrees(self._max_parallax(cs_list, norm_obs))
@@ -1025,6 +1178,13 @@ class MSCKF:
 
 
         n_used = len(accepted)
+        # Accumulate run-time stats for filter-consistency reporting.
+        self.cum_n_in    += n_in
+        self.cum_n_used  += n_used
+        self.cum_n_chi2  += n_chi2
+        self.n_updates   += 1
+        self.last_n_in    = n_in
+        self.last_n_used  = n_used
         print(f"[update] in={n_in:3d} used={n_used:3d} used/in: {n_used / n_in :.2f}  drops: short={n_short} "
               f"parallax={n_parallax} dlt={n_dlt} gn={n_gn} jac={n_jac} chi2={n_chi2}",
               flush=True)
@@ -1033,19 +1193,20 @@ class MSCKF:
 
 
 
-        # TANI: accepted track'lerin ham reprojection residual'i. İlk karelerde
-        # IMU pozları neredeyse kusursuz olduğu için bu küçük olmalı (~birkaç px).
+        # DIAGNOSTIC: raw reprojection residual of the accepted tracks. In the
+        # first frames this should be small (a few px), since the IMU poses
+        # are still nearly perfect.
         if _diag_on and _diag_res:
             allr = np.abs(np.concatenate(_diag_res))
             fx   = self.K[0, 0]
-            print(f"[diag u{self._diag_done + 1}] ham residual |z-zhat| (normalize): "
+            print(f"[diag u{self._diag_done + 1}] raw residual |z-zhat| (normalized): "
                   f"mean={allr.mean():.4f} max={allr.max():.4f}  "
                   f"≈ mean={allr.mean()*fx:.1f}px max={allr.max()*fx:.1f}px", flush=True)
-            # P'nin update ÖNCESİ büyüklüğü — K'nın P'den mi (erken = büyük P)
-            # yoksa M'den mi (uzun track) patladığını ayırmak için.
-            # sqrt(diag(P)) = o eksendeki 1σ belirsizlik.
+            # Size of P BEFORE this update — to separate whether K blows up
+            # because of P (early on = large P) or because of M (a long
+            # track). sqrt(diag(P)) = the 1-sigma uncertainty on that axis.
             Pd = np.sqrt(np.clip(np.diag(self.P_matrix), 0.0, None))
-            print(f"[diag u{self._diag_done + 1}] P update-öncesi (1σ): "
+            print(f"[diag u{self._diag_done + 1}] P pre-update (1-sigma): "
                   f"att={np.linalg.norm(Pd[0:3]):.3f}rad "
                   f"bg={np.linalg.norm(Pd[3:6]):.4f} "
                   f"vel={np.linalg.norm(Pd[6:9]):.3f}m/s "
@@ -1062,9 +1223,9 @@ class MSCKF:
         # =============================================================
         # PHASE 2 — Sequential per-track Joseph update
         # =============================================================
-        # Her accepted (H_o, r_o) için bağımsız küçük EKF step. Track sırası
-        # teorik olarak sonucu etkiler (linearizasyon farkları), ama
-        # Mourikis tarzı tek-iteration EKF için bu ihmal edilebilir.
+        # An independent small EKF step for each accepted (H_o, r_o). Track
+        # order theoretically affects the result (linearization differences),
+        # but this is negligible for a Mourikis-style single-iteration EKF.
         n_state = self.P_matrix.shape[0]
         I_full  = np.eye(n_state)
 
@@ -1072,15 +1233,15 @@ class MSCKF:
 
 
 
-        _diag_dx    = np.zeros(15)  # TANI: bu çağrıda IMU-state'e uygulanan Σ|Δx|
+        _diag_dx    = np.zeros(15)  # DIAGNOSTIC: sum|dx| applied to the IMU state in this call
 
-        # Biriken hata-durumu (accumulated error state). Doğru sequential
-        # update: her track'in residual'i o ana kadar uygulanan toplam
-        # düzeltmeyle telafi edilir; nominal state'e döngü SONUNDA tek
-        # seferde uygulanır. dx_total bu toplamı tutar.
+        # Accumulated error state. Correct sequential update: each track's
+        # residual is compensated by the total correction applied so far;
+        # the nominal state is updated ONCE, at the end of the loop. dx_total
+        # holds this running sum.
         dx_total    = np.zeros(n_state)
-        _diag_condS = []            # TANI: track başına innovation-kovaryans koşul sayısı
-        _diag_normK = []            # TANI: track başına Kalman gain normu
+        _diag_condS = []            # DIAGNOSTIC: per-track innovation-covariance condition number
+        _diag_normK = []            # DIAGNOSTIC: per-track Kalman gain norm
 
 
 
@@ -1090,49 +1251,54 @@ class MSCKF:
             df = H_o.shape[0]
             R_meas = sigma_norm_sq * np.eye(df)
 
-            # Innovation covariance:  S = H P H^T + R   (df × df, küçük matris)
+            # Innovation covariance:  S = H P H^T + R   (df × df, small matrix)
             S = H_o @ self.P_matrix @ H_o.T + R_meas
 
             # Kalman gain:  K = P H^T S^-1
-            # linear-solve, çünkü direct inversion daha az kararlı.
+            # Uses a linear solve, since direct inversion is less stable.
             K_gain = self.P_matrix @ H_o.T @ np.linalg.solve(S, np.eye(df))
 
-            # Residual'i biriken düzeltmeye göre telafi et:
-            #   r_active = r_o - H_o · dx_total
-            # Bu satır olmadan her track önceki track'lerin çözdüğü hatayı
-            # yeniden görüp yeniden düzeltir → pozitif geri besleme →
-            # overshoot → diverge.
+            # Compensate the residual for the correction accumulated so far:
+            #   r_active = r_o - H_o . dx_total
+            # Without this line, each track would see the error already
+            # resolved by previous tracks and correct it again -> positive
+            # feedback -> overshoot -> divergence.
             r_active = r_o - H_o @ dx_total
 
-            # Bu adımın hata-durumu katkısı:  δx_step = K · r_active
+            # This step's contribution to the error state:  dx_step = K . r_active
             delta_x = K_gain @ r_active
 
-            # ── TANI: ATTITUDE-LOCK ──────────────────────────────────────
-            # Açıkken update IMU attitude'unu (δθ) düzeltmez. İzolasyon
-            # deneyi: spurious attitude tekmesi runaway'in sebebi mi?
+            # ── DIAGNOSTIC: ATTITUDE-LOCK ─────────────────────────────────
+            # When on, the update does not correct the IMU attitude (dtheta).
+            # Isolation experiment: is the spurious attitude kick the cause
+            # of the runaway?
             if getattr(self, 'lock_imu_attitude', False):
                 delta_x[0:3] = 0.0
 
-            # Bu adımın katkısını biriken toplama ekle (nominal'e DEĞİL).
+            # Add this step's contribution to the running total (NOT to the
+            # nominal state).
             dx_total += delta_x
 
 
 
 
-            if _diag_on:                       # TANI: gain / koşulluluk ölç
+            if _diag_on:                       # DIAGNOSTIC: measure gain / conditioning
                 _diag_dx += np.abs(delta_x[:15])
                 _diag_condS.append(float(np.linalg.cond(S)))
                 _diag_normK.append(float(np.linalg.norm(K_gain)))
-                # İlk birkaç track'i tek tek dök: hangi track K'yı patlatıyor,
-                # ve o track uzak / düşük-parallax mı?
+                # Dump the first few tracks individually: which track blows
+                # up K, and is that track distant / low-parallax?
                 if _trk_i < 6:
                     M_obs, depth, prlx = _diag_geo[_trk_i]
-                    # 1a/1b ayrımı: kamera-state'lerin kendi attitude düzeltmesi
-                    # (δθ_cam) ile IMU attitude düzeltmesini (δθ_imu) karşılaştır.
-                    #   δθ_imu >> δθ_cam → kovaryans bağı IMU'yu orantısız
-                    #                      şişiriyor (1b — coupling hatası)
-                    #   δθ_imu ≈ δθ_cam, ikisi de büyük → ölçüm büyük attitude
-                    #                      düzeltmesi dayatıyor (1a — kamera tarafı)
+                    # 1a/1b distinction: compare each camera state's own
+                    # attitude correction (dtheta_cam) against the IMU
+                    # attitude correction (dtheta_imu).
+                    #   dtheta_imu >> dtheta_cam -> the covariance coupling is
+                    #                      disproportionately inflating the IMU
+                    #                      (1b — a coupling error)
+                    #   dtheta_imu ~ dtheta_cam, both large -> the measurement
+                    #                      itself is imposing a large attitude
+                    #                      correction (1a — camera-side)
                     n_cam = len(self.cam_states)
                     cam_dth = max((np.linalg.norm(delta_x[15+6*i:15+6*i+3])
                                    for i in range(n_cam)), default=0.0)
@@ -1150,35 +1316,36 @@ class MSCKF:
 
             # ----- JOSEPH-FORM COVARIANCE UPDATE -----
             # P = (I - KH) P (I - KH)^T + K R K^T
-            # Naive (I - KH) P formu zamanla asimetrik drift eder ve
-            # positive-definiteness kaybedebilir; Joseph form (I - KH)'ın
-            # sağdan da çarpılması ve K R K^T eklenmesiyle her step'te PD
-            # kalmasını garanti eder.
+            # The naive (I - KH) P form drifts asymmetric over time and can
+            # lose positive-definiteness; the Joseph form — right-multiplying
+            # by (I - KH) as well and adding K R K^T — guarantees P stays
+            # PD at every step.
             I_KH = I_full - K_gain @ H_o
             P_new = I_KH @ self.P_matrix @ I_KH.T + K_gain @ R_meas @ K_gain.T
 
-            # Sayısal asimetri biriken yuvarlama hatalarından gelir; her
-            # adımda 0.5 * (P + P^T) ile düzelt.
+            # Numerical asymmetry comes from accumulated rounding error; fix
+            # it at every step with 0.5 * (P + P^T).
             self.P_matrix = 0.5 * (P_new + P_new.T)
 
-        # ── TANI: REPROJECTION RESIDUAL AZALMASI ─────────────────────────
-        # Update lokal olarak doğru çalışıyor mu? Toplam ||r||_pre vs
-        # ||r||_post karşılaştır. dx_total uygulandıktan sonra her accepted
-        # track'in yeni residual'i r_post = r_o − H_o · dx_total. Sağlıklı
-        # bir EKF update bunu AZALTIR; oran > 1 ise update math'inde ters
-        # yön/işaret hatası vardır — bug lokalize.
+        # ── DIAGNOSTIC: REPROJECTION RESIDUAL REDUCTION ──────────────────
+        # Is the update working correctly locally? Compare total ||r||_pre
+        # vs ||r||_post. After dx_total is applied, each accepted track's new
+        # residual is r_post = r_o - H_o . dx_total. A healthy EKF update
+        # REDUCES this; a ratio > 1 means there is a sign/direction error in
+        # the update math — used to localize the bug.
         if _diag_on:
             sum_pre  = sum(np.linalg.norm(r) for _, r in accepted)
             sum_post = sum(np.linalg.norm(r - H @ dx_total) for H, r in accepted)
             ratio    = sum_post / sum_pre if sum_pre > 0 else float('nan')
-            tag      = 'AZALDI' if ratio < 1.0 else 'ARTTI'
+            tag      = 'DECREASED' if ratio < 1.0 else 'INCREASED'
             print(f"[diag u{self._diag_done + 1}] residual reduction: "
                   f"||r||_pre={sum_pre:.3f} → ||r||_post={sum_post:.3f}  "
                   f"ratio={ratio:.3f}  ({tag})", flush=True)
 
-        # ----- BOXPLUS: biriken toplam Δx'i nominal state'e BİR KERE uygula.
-        # Nominal state döngü İÇİNDE güncellenmez — yoksa H_o/r_o eski
-        # linearizasyon noktasına göre bayatlar. Döngü bitti, hepsi tutarlı.
+        # ----- BOXPLUS: apply the accumulated total dx to the nominal state
+        # ONCE. The nominal state is NOT updated inside the loop — otherwise
+        # H_o/r_o would go stale relative to their linearization point. Once
+        # the loop is done, everything is consistent.
         self.nominal_rot  = self.nominal_rot * R.from_rotvec(dx_total[0:3])
         self.bg          += dx_total[3:6]
         self.nominal_vel += dx_total[6:9]
@@ -1190,29 +1357,35 @@ class MSCKF:
             cs.rot = cs.rot * R.from_rotvec(dx_total[base:base + 3])
             cs.pos = cs.pos + dx_total[base + 3:base + 6]
 
+        # Refresh the IMU-state FEJ anchor: the predicts and augments coming
+        # before the next update will linearize at this new rotation.
+        self.nominal_rot_fej = self.nominal_rot
 
 
 
 
-        # TANI: bu update çağrısında IMU-state'e uygulanan toplam düzeltme.
-        # δθ büyükse attitude tekmeleniyor → gravity sızıyor → z/hız patlıyor.
+
+        # DIAGNOSTIC: total correction applied to the IMU state in this
+        # update call. If dtheta is large, the attitude is being kicked ->
+        # gravity leaks in -> z/velocity blows up.
         if _diag_on:
-            print(f"[diag u{self._diag_done + 1}] uygulanan toplam Δx (IMU state): "
+            print(f"[diag u{self._diag_done + 1}] total dx applied (IMU state): "
                   f"dtheta={np.linalg.norm(dx_total[0:3]):.4f}rad "
                   f"dbg={np.linalg.norm(dx_total[3:6]):.5f} "
                   f"dv={np.linalg.norm(dx_total[6:9]):.4f}m/s "
                   f"dba={np.linalg.norm(dx_total[9:12]):.5f} "
                   f"dp={np.linalg.norm(dx_total[12:15]):.4f}m", flush=True)
-            # cond(S): "sıfıra bölmeye ne kadar yakınız". >~1e6 → kötü-koşullu,
-            # belirsiz-derinlik track'i → gain patlıyor. ||K|| doğrudan gain büyüklüğü.
+            # cond(S): "how close are we to dividing by zero". >~1e6 -> poorly
+            # conditioned, an uncertain-depth track -> the gain blows up.
+            # ||K|| is directly the gain magnitude.
             if _diag_condS:
-                print(f"[diag u{self._diag_done + 1}] track-bazli: "
+                print(f"[diag u{self._diag_done + 1}] per-track: "
                       f"cond(S) max={max(_diag_condS):.2e} min={min(_diag_condS):.2e}  "
                       f"||K|| max={max(_diag_normK):.2e}", flush=True)
 
-        # Buraya yalnızca accepted doluyken ulaşılır (boşsa yukarıda return
-        # edilmişti). Demek ki bu update gerçekten track uyguladı — diag
-        # penceresinden bir slot harca.
+        # Only reached here if accepted is non-empty (otherwise we already
+        # returned above). So this update really did apply a track — spend
+        # one slot of the diagnostic window.
         if _diag_on:
             self._diag_done += 1
 

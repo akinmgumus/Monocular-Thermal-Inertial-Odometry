@@ -20,6 +20,27 @@ GT_LOCAL_POSE      = os.path.join(DATA_ROOT, 'pose/local_pose.csv')
 
 
 # ----------------------------------------------------------------------
+# GROUND TRUTH (uniform loader for evo / evaluation)
+# ----------------------------------------------------------------------
+def load_ground_truth(gt_path=GT_LOCAL_POSE):
+    """SThereo local_pose.csv → {'t','p','q'} (quaternion xyzw).
+
+    File columns: t, x, y, z, roll_deg, pitch_deg, yaw_deg (comma-separated).
+    RPY (degrees) is converted to a quaternion. The RAW GT frame is returned;
+    evo's SE(3) Umeyama alignment resolves the rigid offset to the MSCKF world
+    frame, so no manual yaw-align / origin-shift is applied here (that lives in
+    the test script for the live plot).
+    """
+    from scipy.spatial.transform import Rotation as R
+    raw = np.loadtxt(gt_path, delimiter=',')
+    return {
+        't': raw[:, 0].astype(np.float64),
+        'p': raw[:, 1:4].astype(np.float64),
+        'q': R.from_euler('xyz', raw[:, 4:7], degrees=True).as_quat(),  # xyzw
+    }
+
+
+# ----------------------------------------------------------------------
 # CALIBRATION LOADERS
 # ----------------------------------------------------------------------
 def load_camera_intrinsics(yaml_path=CAM_INTRINSIC_YAML):
@@ -63,17 +84,29 @@ def load_extrinsic(path=CAM_IMU_EXTRINSIC):
 # ----------------------------------------------------------------------
 # IMU NOISE MODEL — Xsens MTi-300 datasheet, used in MSCKF.Q
 # ----------------------------------------------------------------------
-IMU_GYRO_NOISE_DENSITY  = 0.0001745   # rad/s/√Hz
-IMU_ACCEL_NOISE_DENSITY = 0.0005886   # m/s²/√Hz
-IMU_GYRO_BIAS_RW        = 0.0000048   # rad/s/√s
-IMU_ACCEL_BIAS_RW       = 0.0001471   # m/s²/√s 
+
+# Xsens MTi-300 datasheet values, used DIRECTLY — no inflation. The thesis
+# evaluates the dataset-provided IMU parametrisation as-is (RQ3b); the previous
+# ×5 (white noise) / ×10 (bias random walk) inflation is removed.
+IMU_GYRO_NOISE_DENSITY  = 0.000175    # rad/s/sqrt(Hz)    (datasheet, raw)
+IMU_ACCEL_NOISE_DENSITY = 0.000589    # m/s^2/sqrt(Hz)    (datasheet, raw)
+IMU_GYRO_BIAS_RW        = 4.8e-6      # rad/s^2/sqrt(Hz)  (datasheet, raw)
+IMU_ACCEL_BIAS_RW       = 1.47e-4     # m/s^3/sqrt(Hz)    (datasheet, raw)
+
 
 
 # ----------------------------------------------------------------------
 # PIPELINE TUNING
 # ----------------------------------------------------------------------
-STATIC_INIT_SECONDS = 3.5       # seconds of stationary IMU used to bootstrap state
-                                # IMU analizi (gyro_max & accel_std) datasette
-                                # motion onset'in t≈6.0s'de keskin başladığını
-                                # gösteriyor; 5.0s güvenli durağan pencere.
+STATIC_INIT_SECONDS = 4.0       # seconds of stationary IMU used to bootstrap state
+                                # IMU analysis (gyro_max & accel_std) on this
+                                # dataset shows motion onset starting sharply
+                                # at t~6.0s; 5.0s is a safe stationary window.
 GRAVITY_MAGNITUDE   = 9.81      # m/s² (overridden by initialize_from_static)
+
+
+# ----------------------------------------------------------------------
+# SEGMENT ANALYSIS — fixed thresholds (no auto-tuning); scene-scale dependent
+# ----------------------------------------------------------------------
+SEG_THRESHOLD_M    = 5.0    # tracking/diverged boundary on 4-DOF-aligned |err|
+SEG_MIN_DURATION_S = 2.0     # shorter excursions/dips are transients

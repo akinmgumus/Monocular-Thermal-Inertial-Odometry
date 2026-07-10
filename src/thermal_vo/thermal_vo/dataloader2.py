@@ -11,9 +11,20 @@ class ThermalDataLoader:
       2. Crop left half if stereo side-by-side
       3. Undistort (plumb-bob remap) when K, D are given
       4. Gaussian blur to denoise thermal sensor speckle
-      5. CLAHE for local contrast enhancement (native bit-depth)
-      6. Normalize 16-bit to 8-bit (percentile / fixed / 14bit)
-        
+      5. Normalize 16-bit to 8-bit (percentile / fixed / 14bit)
+      6. CLAHE for local contrast enhancement (on 8-bit)
+
+    --- A/B VARIANT (dataloader2) ---------------------------------------
+    This module is an exact copy of dataloader.py with ONE change: the order
+    of the normalization and CLAHE stages is swapped, so CLAHE is applied
+    *after* the 8-bit normalization (i.e. directly on the 8-bit image) rather
+    than on the native bit-depth. This is the conventional ordering in the
+    literature and makes the CLAHE clip_limit operate on a dense 256-bin
+    histogram. Used to test preprocessing sensitivity (RQ3) on a single
+    dataset; swap the import in the test script (dataloader -> dataloader2)
+    to switch pipelines. Everything else is identical.
+    ---------------------------------------------------------------------
+
     Supports SThereo and FIReStereo datasets.
     """
 
@@ -119,10 +130,12 @@ class ThermalDataLoader:
 
     def _load_single(self, path):
         """Load, preprocess, and return a single image as uint8 grayscale.
-        Pipeline: read raw → (crop) → undistort → (gaussian blur) → CLAHE → normalize to 8-bit.
-        Blur denoises the raw thermal image so CLAHE doesn't amplify sensor noise;
-        CLAHE runs in native bit-depth (OpenCV supports 16-bit). Final 8-bit
-        normalization is moved to the end so the output range is well-defined."""
+        Pipeline: read raw → (crop) → undistort → (gaussian blur) → normalize to 8-bit → CLAHE.
+        Blur denoises the raw thermal image first; the 16-bit frame is then
+        normalized to 8-bit, and CLAHE is applied on the 8-bit image so the
+        clip_limit acts on a dense 256-bin histogram (conventional ordering).
+        This is the A/B counterpart to dataloader.py, which applies CLAHE on
+        the native bit-depth *before* normalization."""
         if self.bit_depth == 16:
             raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         else:
@@ -153,18 +166,13 @@ class ThermalDataLoader:
             raw = cv2.remap(raw, *self._undistort_maps, cv2.INTER_LINEAR)
 
         # Gaussian blur on the raw bit-depth — denoises thermal sensor speckle
-        # before CLAHE has a chance to amplify it.
+        # before any contrast enhancement has a chance to amplify it.
         if self.gaussian_sigma > 0.0:
             raw = cv2.GaussianBlur(raw, self.gaussian_ksize, self.gaussian_sigma)
 
-        # CLAHE on native bit-depth (8-bit and 16-bit both supported by OpenCV).
-        if self.use_clahe:
-            raw = self.clahe.apply(raw)
-
-        # 8-bit normalization (last step). The KLT front-end keys off intensity
-        # gradients, and a monotonic frame-wide mapping rescales every gradient
-        # uniformly — so the choice of low/high here does not change which
-        # features get tracked. Done last so the output range is well-defined.
+        # 8-bit normalization FIRST (A/B change). For 16-bit input this maps the
+        # native radiometric range into 0..255 so that the subsequent CLAHE
+        # operates on a dense 256-bin histogram and its clip_limit is meaningful.
         if self.bit_depth == 16:
             if self.normalize == '14bit':
                 lo, hi = 0.0, 16383.0
@@ -177,6 +185,10 @@ class ThermalDataLoader:
 
             raw = ((raw.astype(np.float32) - lo) / (hi - lo) * 255
                    ).clip(0, 255).astype(np.uint8)
+
+        # CLAHE on the 8-bit image (A/B change: applied AFTER normalization).
+        if self.use_clahe:
+            raw = self.clahe.apply(raw)
 
         return raw
 

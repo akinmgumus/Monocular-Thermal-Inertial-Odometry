@@ -1,21 +1,22 @@
-# KLT (Kanade-Lucas-Tomasi) tabanlı özellik takipçisi.
+# KLT (Kanade-Lucas-Tomasi) based feature tracker.
 #
-# ORB ile karşılaştırma (termal görüntüler için):
-#   + Descriptor yok — doğrudan intensity gradient kullanır. BRIEF binary
-#     testlerinin termal'de tutarsız kalması problemi yok.
-#   + Sub-pixel doğruluk doğal olarak gelir.
-#   − Brightness constancy varsayımı termal'de tam tutmaz (sıcaklık zamanla
-#     değişir); FB-consistency check bunu yakalamaya çalışır.
-#   − Bir track kaybolunca tekrar yakalanamaz (descriptor re-match yok).
-#     Refill ile sürekli yeni track açmak gerekir.
+# Comparison with ORB (for thermal imagery):
+#   + No descriptor — works directly on the intensity gradient. Avoids the
+#     problem of BRIEF binary tests being unstable on thermal data.
+#   + Sub-pixel accuracy comes naturally.
+#   - The brightness-constancy assumption does not fully hold on thermal data
+#     (temperature drifts over time); the FB-consistency check tries to catch
+#     the resulting failures.
+#   - A lost track cannot be re-acquired (no descriptor re-matching).
+#     Continuously opening new tracks via refill is required.
 #
-# Public API ORBTracker ile birebir aynı tutuldu:
+# Public API kept identical to ORBTracker:
 #   .process_frame(image, frame_id)
 #   .active_tracks      : list[FeatureTrack]
 #   .dead_tracks        : list[FeatureTrack]
 #   .marginalize_at_prune(frame_id)
-#   .last_match_stats   : dict (tanı için, her frame güncellenir)
-# Bu sayede MSCKF test scriptinde tek satırlık import değişikliği ile geçilir.
+#   .last_match_stats   : dict (for diagnostics, updated every frame)
+# This lets the MSCKF test script switch trackers with a one-line import change.
 
 
 import cv2
@@ -24,19 +25,19 @@ import numpy as np
 
 class FeatureTrack:
     """
-    Tek bir feature noktasının yaşam döngüsünü temsil eder.
+    Represents the lifecycle of a single feature point.
 
-    MSCKF.update() bu objeden iki şey okur:
-      - frame_ids: hangi cam_state'lerde gözlemlendi
-      - keypoints: her cam_state'te hangi pixel koordinatında
+    MSCKF.update() reads two things from this object:
+      - frame_ids: which cam_states it was observed in
+      - keypoints: the pixel coordinate in each of those cam_states
 
-    ORB versiyonundan farklı olarak burada `descriptor` field'ı YOK —
-    KLT pixel-level optical flow yapar, descriptor matching kullanmaz.
+    Unlike the ORB version, there is NO `descriptor` field here — KLT does
+    pixel-level optical flow, not descriptor matching.
     """
     def __init__(self, track_id, frame_id, kp):
         self.track_id   = track_id
         self.frame_ids  = [frame_id]
-        self.keypoints  = [kp]      # (x, y) tuple, pixel cinsinden
+        self.keypoints  = [kp]      # (x, y) tuple, in pixels
 
 
 class KLTTracker:
@@ -53,55 +54,61 @@ class KLTTracker:
                  refill_threshold=None):
         """
         Args:
-            n_features: Aynı anda tutulmaya çalışılan maksimum track sayısı.
-                        Bu sayı kadar Shi-Tomasi köşesi bootstrap ve refill'de
-                        hedeflenir.
+            n_features: Maximum number of tracks to try to maintain at once.
+                        This many Shi-Tomasi corners are targeted at bootstrap
+                        and at refill.
 
-            fb_eps:     Forward-backward round-trip toleransı (piksel).
-                        Bir track frame1 → frame2 → frame1 yolculuğu yaptığında
-                        başladığı yere bu mesafeden fazla uzakta dönerse silinir.
-                        1.5 px sıkı; termal'de gerekirse 2.0'a gevşetilir.
+            fb_eps:     Forward-backward round-trip tolerance (pixels).
+                        When a track makes the frame1 -> frame2 -> frame1
+                        round trip and returns farther than this distance
+                        from where it started, it is dropped. 1.5 px is
+                        strict; relaxed to 2.0 on thermal data if needed.
 
-            ransac_thresh: F-matrix RANSAC inlier eşiği (piksel). Lowe ratio +
-                        FB-consistency'yi geçmiş ama epipolar geometri ihlal
-                        eden geometrik outlier'ları yakalar.
+            ransac_thresh: F-matrix RANSAC inlier threshold (pixels). Catches
+                        geometric outliers that passed the Lowe-ratio +
+                        FB-consistency checks but violate the epipolar
+                        geometry.
 
-            min_track_length: Bir track'in dead_tracks'e (MSCKF update'e) konması
-                        için gereken minimum gözlem sayısı. ORB ile aynı.
+            min_track_length: Minimum number of observations a track needs
+                        before it is placed in dead_tracks (i.e. fed to the
+                        MSCKF update). Same as for ORB.
 
-            lk_win_size: Lucas-Kanade penceresi (pixel). Bu pencere içindeki
-                        tüm piksellerin "aynı (u,v) flow vektörüyle hareket
-                        ettiği" varsayımıyla least-squares çözüm yapılır.
-                        Büyük pencere → structure matrix daha kuvvetli ama
-                        kenar artefaktları artar. (25, 25) termal'de
-                        smooth gradient'ler için (21, 21)'den biraz daha
-                        kararlı.
+            lk_win_size: Lucas-Kanade window (pixels). The least-squares
+                        solution assumes every pixel inside this window
+                        "moves with the same (u,v) flow vector". A larger
+                        window gives a stronger structure matrix but
+                        increases edge artefacts. (25, 25) is a bit more
+                        stable than (21, 21) for the smooth gradients typical
+                        of thermal imagery.
 
-            lk_max_level: Image pyramid level sayısı (0 dahil). max_level=3
-                        toplam 4 seviye, en kabası 1/8 çözünürlük. ~30-40 px
-                        frame-içi hareket bu sayede ele alınabilir. Hızlı
-                        rotasyonlarda kritik.
+            lk_max_level: Number of image pyramid levels (0 included).
+                        max_level=3 means 4 levels total, the coarsest at
+                        1/8 resolution. This lets ~30-40 px of inter-frame
+                        motion be handled — critical during fast rotations.
 
-            quality_level: Shi-Tomasi göreli kalite eşiği. Bulunan en güçlü
-                        köşenin min(λ₁, λ₂)'sinin bu oranı kadar güçlü olan
-                        köşeler kabul edilir. Termal düşük-kontrast olduğu
-                        için 0.005-0.01 arası tipik; daha yüksek (0.05+)
-                        çoğu termal frame'de yeterli köşe bulamaz.
+            quality_level: Shi-Tomasi relative quality threshold. A corner is
+                        accepted if its min(lambda_1, lambda_2) is at least
+                        this fraction of the strongest corner's value.
+                        Thermal imagery is low-contrast, so 0.005-0.01 is
+                        typical; higher (0.05+) fails to find enough corners
+                        on most thermal frames.
 
-            min_distance: İki Shi-Tomasi köşesi arasındaki minimum piksel
-                        mesafesi (non-maximum suppression yarıçapı). Spatial
-                        diversity sağlar; cluster oluşumunu önler. ORB'taki
-                        grid mantığının KLT karşılığı.
+            min_distance: Minimum pixel distance between two Shi-Tomasi
+                        corners (non-maximum-suppression radius). Enforces
+                        spatial diversity and prevents clustering. The KLT
+                        counterpart of ORB's grid logic.
 
-            max_pixel_displacement: Bir track'in frame-arası izin verilen
-                        maksimum öklid kayması (piksel). FB-consistency'yi
-                        geçen ama fwd/bwd flow'un ikisi de yanlış ama tutarlı
-                        bir yere yakınsadığı durumları yakalar — ORB'ta
-                        eklediğimiz motion-prior gate ile aynı mantık.
+            max_pixel_displacement: Maximum allowed inter-frame Euclidean
+                        displacement of a track (pixels). Catches cases that
+                        pass FB-consistency but where both the forward and
+                        backward flow are wrong yet converge to a consistent
+                        (incorrect) point — the same logic as the
+                        motion-prior gate added on the ORB side.
 
-            refill_threshold: Aktif track sayısı bu eşiğin altına düştüğünde
-                        Shi-Tomasi ile yeni köşe ekleyip n_features'a kadar
-                        doldurur. None → n_features // 2 (varsayılan).
+            refill_threshold: When the active track count drops below this
+                        threshold, new Shi-Tomasi corners are added via
+                        refill up to n_features. None -> n_features // 2
+                        (default).
         """
         self.n_features             = n_features
         self.fb_eps                 = fb_eps
@@ -115,53 +122,56 @@ class KLTTracker:
         self.refill_threshold       = (refill_threshold if refill_threshold is not None
                                        else n_features // 2)
 
-        # cv2.calcOpticalFlowPyrLK için sözlük formatlı parametreler. Iterasyon
-        # kriteri: ya 30 iterasyon ya da bir adımda Δ < 0.01 piksel.
+        # Dict-form parameters for cv2.calcOpticalFlowPyrLK. Iteration
+        # criterion: either 30 iterations, or a step delta < 0.01 pixel.
         self.lk_params = dict(
             winSize=lk_win_size,
             maxLevel=lk_max_level,
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
         )
 
-        self.next_track_id = 0    # Her yeni track'e benzersiz ID veren counter
-        self.active_tracks = []   # Şu anda takip edilen track'ler
-        self.dead_tracks   = []   # Bu frame'de retire edilenler (MSCKF'e gider)
-        self.prev_image    = None # Bir önceki frame, LK için referans
+        self.next_track_id = 0    # Counter assigning a unique ID to each new track
+        self.active_tracks = []   # Tracks currently being followed
+        self.dead_tracks   = []   # Tracks retired this frame (fed to the MSCKF)
+        self.prev_image    = None # Previous frame, used as the LK reference
 
-        # Tanı amaçlı — her process_frame sonunda doldurulur. Test scriptinde
-        # her ~50 frame'de bir yazdırılıp hangi filtreden ne kadar düştüğüne
-        # bakarız.
+        # For diagnostics — populated at the end of every process_frame.
+        # The test script prints this every ~50 frames to see how much each
+        # filtering stage is dropping.
         self.last_match_stats = {
-            'tracked':      0,   # LK'nın takibe alabildiği track sayısı
-            'after_fb':     0,   # FB-consistency'den geçen
-            'after_disp':   0,   # max_pixel_displacement'tan geçen
-            'after_ransac': 0,   # F-matrix RANSAC'tan geçen
+            'tracked':      0,   # tracks LK managed to follow
+            'after_fb':     0,   # survived FB-consistency
+            'after_disp':   0,   # survived max_pixel_displacement
+            'after_ransac': 0,   # survived the F-matrix RANSAC
         }
 
 
     # ------------------------------------------------------------------
     def _detect_corners(self, image, mask=None):
         """
-        Shi-Tomasi köşe detektörü. "İyi takip edilebilecek" pikselleri bulur.
+        Shi-Tomasi corner detector. Finds pixels that are "good to track".
 
-        İçeride yapılan:
-          1. Image gradient (Sobel ile Iₓ, Iᵧ).
-          2. Her piksel için 2×2 structure matrix M = [[ΣIₓ², ΣIₓIᵧ],
-                                                       [ΣIₓIᵧ, ΣIᵧ²]].
-             Σ küçük bir komşulukta (cv2 default 3×3).
-          3. Her piksel için min(λ₁, λ₂) hesapla; yüksek olanları köşe say.
-             min(λ₁, λ₂) >= quality_level × max(min(λ_i)_over_image) olanlar.
-          4. min_distance yarıçaplı non-maximum suppression uygula.
-          5. En kuvvetli en fazla n_features adet köşeyi dön.
+        What happens internally:
+          1. Image gradient (Ix, Iy via Sobel).
+          2. For each pixel, the 2x2 structure matrix
+             M = [[sum Ix^2, sum Ix*Iy], [sum Ix*Iy, sum Iy^2]],
+             summed over a small neighbourhood (cv2 default 3x3).
+          3. Compute min(lambda_1, lambda_2) for each pixel; the higher ones
+             count as corners: those with
+             min(lambda_1, lambda_2) >= quality_level * max(min(lambda_i))_over_image.
+          4. Apply non-maximum suppression with radius min_distance.
+          5. Return at most n_features of the strongest corners.
 
         Args:
             image: uint8 grayscale (preprocessed thermal frame).
-            mask:  opsiyonel uint8 maske; 0 olan bölgelerde köşe ARANMAZ.
-                   Refill'de aktif track'lerin etrafını maskelemek için.
+            mask:  optional uint8 mask; corners are NOT searched for where it
+                   is 0. Used at refill time to mask out the area around
+                   existing active tracks.
 
         Returns:
-            (N, 2) float32 numpy array — her satır bir köşenin (x, y) pixel
-            koordinatı. N ≤ n_features. Hiç köşe bulunamazsa (0, 2) boş array.
+            (N, 2) float32 numpy array — each row is a corner's (x, y) pixel
+            coordinate. N <= n_features. An empty (0, 2) array if no corner
+            is found.
         """
         corners = cv2.goodFeaturesToTrack(
             image,
@@ -170,28 +180,29 @@ class KLTTracker:
             minDistance=self.min_distance,
             mask=mask,
         )
-        # cv2 None döndürebilir (görüntüde hiç köşe bulamazsa): tek tip
-        # davranış için her zaman 2D float32 array dön.
+        # cv2 can return None (if it finds no corner at all in the image):
+        # always return a 2D float32 array for uniform downstream behaviour.
         if corners is None:
             return np.empty((0, 2), dtype=np.float32)
-        # cv2 (N, 1, 2) shape verir — (N, 2)'ye düzleştir.
+        # cv2 gives shape (N, 1, 2) — flatten to (N, 2).
         return corners.reshape(-1, 2).astype(np.float32)
 
 
     # ------------------------------------------------------------------
     def _refill_mask(self, image_shape):
         """
-        Refill sırasında Shi-Tomasi'nin "buralarda köşe arama" diyebilmesi için
-        aktif track'lerin etrafını maskeleyen uint8 array üretir.
+        Builds the uint8 array that masks out the area around active tracks,
+        so Shi-Tomasi knows where NOT to look for corners during refill.
 
-        Maske mantığı:
-          - Her yer 255'le başlar (= "ara").
-          - Her aktif track'in SON keypoint'i etrafında `min_distance` yarıçaplı
-            dolu disk çizilir, değer 0 (= "arama").
+        Mask logic:
+          - Everything starts at 255 (= "search here").
+          - A filled disc of radius `min_distance` is drawn around each
+            active track's LAST keypoint, set to 0 (= "do not search").
 
-        radius = min_distance seçimi: zaten "iki Shi-Tomasi köşesi birbirinden
-        min_distance uzakta olmalı" kuralı işliyor; aynı kuralı mevcut track'le
-        yeni köşe arasında uygulamak tutarlılık sağlar.
+        Choice of radius = min_distance: the same rule already in effect
+        ("two Shi-Tomasi corners must be at least min_distance apart") is
+        applied here between an existing track and a candidate new corner,
+        for consistency.
 
         Args:
             image_shape: (H, W) tuple — image.shape[:2]
@@ -209,36 +220,36 @@ class KLTTracker:
     # ------------------------------------------------------------------
     def _retire_track(self, track):
         """
-        Bir track'in takipten çıkarılması (ölmesi) durumunda yapılacak işlemler.
-        MSCKF.update() yalnızca min_track_length koşulunu sağlayan ölü track'lerle
-        ilgilenir — daha kısa track'lerden iyi triangulation çıkmadığı için
-        baştan filtreliyoruz.
+        What to do when a track drops out of tracking (dies).
+        MSCKF.update() only cares about dead tracks that satisfy
+        min_track_length — shorter tracks don't yield a good triangulation,
+        so they are filtered out here from the start.
 
         Args:
-            track: retire edilecek FeatureTrack objesi
+            track: the FeatureTrack object to retire
         """
         if len(track.frame_ids) >= self.min_track_length:
             self.dead_tracks.append(track)
 
     def marginalize_at_prune(self, frame_id_to_drop):
         """
-        Sliding-window pencereden bir cam_state düşmek üzereyken çağrılır.
-        O cam_state'i gözlemleyen tüm AKTİF track'ler, sonraki frame'lerde
-        artık bağlamlarını kaybedecek (eski gözlemleri MSCKF'e bağlanamaz)
-        — bu yüzden onları şimdi dead_tracks'e taşıyıp MSCKF.update()'in
-        son kez görmesini sağlıyoruz. Aksi halde uzun, kesintisiz takip
-        edilen feature'lar (en bilgili olanları) filtreye hiç girmeden
-        kayboluyor.
+        Called when a cam_state is about to be dropped from the sliding
+        window. Every ACTIVE track that observed that cam_state will lose
+        its context in later frames (its old observations can no longer be
+        tied to the MSCKF) — so they are moved to dead_tracks now, giving
+        MSCKF.update() one last look at them. Otherwise, long,
+        uninterrupted-tracking features (the most informative ones) would
+        disappear without ever reaching the filter.
 
-        Klasik MSCKF "feature marginalization at pruning" davranışı.
-        Tracker tipinden (ORB/KLT) bağımsız çalışır.
+        This is the classic MSCKF "feature marginalization at pruning"
+        behaviour. Works independently of the tracker type (ORB/KLT).
         """
         keep_active = []
         for tr in self.active_tracks:
             if frame_id_to_drop in tr.frame_ids:
                 if len(tr.frame_ids) >= self.min_track_length:
                     self.dead_tracks.append(tr)
-                # min_track_length altındaki track'ler sessizce düşer.
+                # Tracks below min_track_length are silently dropped.
             else:
                 keep_active.append(tr)
         self.active_tracks = keep_active
@@ -247,21 +258,21 @@ class KLTTracker:
     # ------------------------------------------------------------------
     def process_frame(self, image, frame_id):
         """
-        Her yeni frame'de çağrılır. Active track listesini günceller,
-        FB-consistency + max_pixel_displacement + F-matrix RANSAC zincirinden
-        geçemeyenleri retire eder, gerekirse yeni Shi-Tomasi köşeleriyle
-        doldurur.
+        Called on every new frame. Updates the active track list, retires
+        any track that fails the FB-consistency + max_pixel_displacement +
+        F-matrix RANSAC chain, and refills with new Shi-Tomasi corners if
+        needed.
 
         Args:
-            image:    yeni frame (uint8 grayscale, preprocessed)
-            frame_id: bu frame'in benzersiz ID'si (MSCKF cam_state ile aynı)
+            image:    the new frame (uint8 grayscale, preprocessed)
+            frame_id: this frame's unique ID (same one used for the MSCKF cam_state)
         """
-        # Her frame başında dead_tracks'i sıfırla. MSCKF.update() yalnız bu
-        # frame'de retire olanlarla ilgilenir — geçmiş frame'lerinkiler zaten
-        # işlenmiştir.
+        # Reset dead_tracks at the start of every frame. MSCKF.update() only
+        # cares about tracks retired THIS frame — earlier frames' have
+        # already been processed.
         self.dead_tracks = []
 
-        # Tanı counter'larını sıfırla.
+        # Reset the diagnostic counters.
         self.last_match_stats = {
             'tracked':      0,
             'after_fb':     0,
@@ -270,12 +281,14 @@ class KLTTracker:
         }
 
         # ---- PHASE A: bootstrap ----
-        # İki giriş koşulu:
-        #   1) Hiç önceki frame yok (ilk çağrı, prev_image is None).
-        #   2) Önceki frame vardı ama tüm track'ler kaybolmuş (active boş).
-        # İkinci durumda da sıfırdan kuruyoruz — refill mantığı işlemediği
-        # için pencere boş kalmasın. Bu frame'de takip edilecek bir önceki
-        # feature olmadığından LK fazlarına girmiyoruz, doğrudan return.
+        # Two entry conditions:
+        #   1) No previous frame yet (first call, prev_image is None).
+        #   2) There was a previous frame, but every track has been lost
+        #      (active is empty).
+        # We also (re)bootstrap from scratch in the second case, so the
+        # window doesn't stay empty since the refill logic alone wouldn't
+        # kick in. There is no previous feature to track in this frame, so
+        # we skip the LK phases entirely and return directly.
         if self.prev_image is None or len(self.active_tracks) == 0:
             corners = self._detect_corners(image)
             for c in corners:
@@ -288,42 +301,43 @@ class KLTTracker:
             return
 
         # ---- PHASE B: Pyramidal LK forward ----
-        # Active track'lerin önceki frame'deki son keypoint'leri = prev_pts.
-        # Bu noktaların yeni frame'deki konumlarını cv2.calcOpticalFlowPyrLK
-        # bulur. (N, 1, 2) shape — cv2'nin beklediği layout.
+        # prev_pts = the active tracks' last keypoints in the previous frame.
+        # cv2.calcOpticalFlowPyrLK finds where these points are in the new
+        # frame. Shape (N, 1, 2) — the layout cv2 expects.
         prev_pts = np.array(
             [t.keypoints[-1] for t in self.active_tracks],
             dtype=np.float32
         ).reshape(-1, 1, 2)
 
-        # next_pts: (N, 1, 2) — kestirilen yeni konumlar
-        # status_fwd: (N, 1) uint8 — 1 = LK takip etti, 0 = başarısız
-        # err: (N, 1) float — residual (kullanmıyoruz, FB-check'imiz var)
+        # next_pts: (N, 1, 2) — the estimated new positions
+        # status_fwd: (N, 1) uint8 — 1 = LK tracked it, 0 = failed
+        # err: (N, 1) float — residual (unused, we have our own FB check)
         next_pts, status_fwd, _ = cv2.calcOpticalFlowPyrLK(
             self.prev_image, image, prev_pts, None, **self.lk_params
         )
 
-        # status_fwd'i 1D bool array'e çevir; sonraki fazlar bool maskeleriyle
-        # çalışacak.
+        # Flatten status_fwd to a 1D bool array; the following phases work
+        # with boolean masks.
         status_fwd = status_fwd.ravel().astype(bool)
         self.last_match_stats['tracked'] = int(status_fwd.sum())
 
-        # Intermediate state — Phase C-F için self üzerinde tutuluyor.
-        # Tüm fazlar yazıldıktan sonra (Blok 10) tek process_frame çağrısında
-        # birleştiklerinde bu üç attribute local değişkene çekilebilir; şu an
-        # inkremental smoke test için açık.
+        # Intermediate state — kept on self for Phases C-F. Once all phases
+        # are settled into a single process_frame call, these three
+        # attributes could be pulled into local variables; left as instance
+        # attributes for now to ease incremental smoke testing.
         self._lk_prev_pts = prev_pts.reshape(-1, 2)
         self._lk_next_pts = next_pts.reshape(-1, 2)
         self._lk_status   = status_fwd
 
-        # Not: self.prev_image GÜNCELLENMİYOR. Phase F bunu yapacak.
-        # Tracks da hala eski keypoint'lerinde — Phase F güncelleyecek.
+        # Note: self.prev_image is NOT updated yet. Phase F will do that.
+        # The tracks are also still at their old keypoints — Phase F updates them.
 
         # ---- PHASE C: Backward LK + Forward-Backward Consistency ----
-        # Asimetrik LK fail'lerini yakalama mekanizması: forward LK'nın
-        # bulduğu next_pts'i ters yönde takip et (image → prev_image), elde
-        # edilen back_pts orijinal prev_pts'e yakın ÇIKMALI. Aperture problem,
-        # occlusion, brightness değişimi → bu round-trip kapanmaz, track elenir.
+        # Mechanism for catching asymmetric LK failures: track the forward
+        # LK's next_pts back in the reverse direction (image -> prev_image);
+        # the resulting back_pts SHOULD land close to the original prev_pts.
+        # An aperture problem, occlusion, or brightness change prevents this
+        # round trip from closing, and the track is dropped.
         back_pts, status_bwd, _ = cv2.calcOpticalFlowPyrLK(
             image, self.prev_image,
             self._lk_next_pts.reshape(-1, 1, 2),
@@ -333,24 +347,26 @@ class KLTTracker:
         status_bwd = status_bwd.ravel().astype(bool)
         back_pts = back_pts.reshape(-1, 2)
 
-        # Round-trip hatası: ||prev_pts - back_pts||. Güvenilir track'lerde
-        # alt-piksel mesafede olmalı.
+        # Round-trip error: ||prev_pts - back_pts||. Should be sub-pixel for
+        # reliable tracks.
         fb_err = np.linalg.norm(self._lk_prev_pts - back_pts, axis=1)
 
-        # Üçlü AND: fwd OK + bwd OK + round-trip toleransı içinde
+        # Triple AND: forward OK + backward OK + round-trip within tolerance
         keep_fb = self._lk_status & status_bwd & (fb_err < self.fb_eps)
 
         self.last_match_stats['after_fb'] = int(keep_fb.sum())
-        self._lk_keep_fb = keep_fb   # Phase D-F için stash
+        self._lk_keep_fb = keep_fb   # stashed for Phases D-F
 
         # ---- PHASE D: in-bounds + max_pixel_displacement ----
-        # İki basit gate:
-        #   (i)  LK next_pt görüntü içinde mi? Sınırı aşan noktalar bir sonraki
-        #        cv2 çağrısında bozulur ve F-matrix RANSAC'ı kirletirler.
-        #   (ii) FB-pass etmiş ama "fiziksel olarak makul olmayan" büyük flow'ları
-        #        ele (simetrik LK fail — fwd ve bwd ikisi de yanlış ama tutarlı
-        #        bir yere yakınsamış). ORB'taki max_pixel_displacement gate ile
-        #        aynı mantık.
+        # Two simple gates:
+        #   (i)  Is the LK next_pt inside the image? Points that leave the
+        #        bounds corrupt the next cv2 call and pollute the F-matrix
+        #        RANSAC.
+        #   (ii) Discard large flows that passed FB but are "physically
+        #        implausible" (a symmetric LK failure — both forward and
+        #        backward are wrong but converge to a consistent point).
+        #        Same logic as the max_pixel_displacement gate on the ORB
+        #        side.
         h, w = image.shape[:2]
         np_pts = self._lk_next_pts
         in_bounds = (np_pts[:, 0] >= 0) & (np_pts[:, 0] < w) & \
@@ -365,15 +381,16 @@ class KLTTracker:
         self._lk_keep_disp = keep_disp
 
         # ---- PHASE E: F-matrix RANSAC ----
-        # Son savunma hattı: pixel-space'te tutarlı görünen ama 3D'de hareketli
-        # objelerden (yaya, geçen araç, sallanan dal) veya subtle LK drift'inden
-        # gelen track'leri ele. Two-view geometry varsayımı: tüm match'ler aynı
-        # kameranın ego-motion'ından gelir; ihlal edenler epipolar constraint'i
-        # bozar ve RANSAC bunları outlier sayar.
+        # Last line of defence: discard tracks that look consistent in pixel
+        # space but come from objects moving independently in 3D (a
+        # pedestrian, a passing vehicle, a swaying branch) or from subtle LK
+        # drift. Two-view geometry assumption: all matches come from the
+        # same camera's ego-motion; those that violate it break the
+        # epipolar constraint and RANSAC flags them as outliers.
         pts1 = self._lk_prev_pts[keep_disp]
         pts2 = self._lk_next_pts[keep_disp]
 
-        if len(pts1) >= 8:   # F-matrix tahmini için 8 minimum nokta
+        if len(pts1) >= 8:   # 8 points minimum for the F-matrix estimate
             F, mask = cv2.findFundamentalMat(
                 pts1, pts2, cv2.FM_RANSAC,
                 self.ransac_thresh, 0.99,
@@ -381,14 +398,15 @@ class KLTTracker:
             if F is not None and mask is not None:
                 ransac_inliers = mask.ravel().astype(bool)
             else:
-                # F estimation çöktü — hepsini outlier say (güvenli taraf)
+                # F estimation failed — treat everything as an outlier (safe side)
                 ransac_inliers = np.zeros(len(pts1), dtype=bool)
         else:
-            # 8 noktadan az → F-matrix tanımlanamaz, RANSAC reddedilir.
+            # Fewer than 8 points -> the F-matrix is undefined, RANSAC is rejected.
             ransac_inliers = np.zeros(len(pts1), dtype=bool)
 
-        # RANSAC inlier mask'i (keep_disp subset'i üzerinden) full N uzunluğa
-        # geri yay. keep_disp[i]=True olan i'lere ransac_inliers sırayla denk gelir.
+        # Expand the RANSAC inlier mask (defined over the keep_disp subset)
+        # back to the full N length. Each i with keep_disp[i]=True maps, in
+        # order, to an entry of ransac_inliers.
         keep_ransac = np.zeros_like(keep_disp)
         keep_ransac[keep_disp] = ransac_inliers
 
@@ -396,15 +414,15 @@ class KLTTracker:
         self._lk_keep_ransac = keep_ransac
 
         # ---- PHASE F: survivors update + retire + refill + commit ----
-        # Şu ana kadar state değişmedi — Phase B-E sadece intermediate
-        # array'ler hesapladı. Burada gerçek mutation'lar yapılıyor:
-        #   1) Hayatta kalan track'leri yeni keypoint + frame_id ile ilerlet.
-        #   2) Düşen track'leri retire et (min_track_length koşulunu sağlarsa
-        #      dead_tracks'e gider).
-        #   3) Aktif sayı refill_threshold altına düştüyse Shi-Tomasi ile
-        #      yeni köşeler ekle.
-        #   4) prev_image'ı yeni frame ile değiştir.
-        #   5) Intermediate _lk_* attribute'larını sil (clean state).
+        # No state has changed so far — Phases B-E only computed
+        # intermediate arrays. The actual mutations happen here:
+        #   1) Advance surviving tracks with their new keypoint + frame_id.
+        #   2) Retire dropped tracks (goes to dead_tracks if it satisfies
+        #      min_track_length).
+        #   3) If the active count fell below refill_threshold, add new
+        #      corners via Shi-Tomasi.
+        #   4) Replace prev_image with the new frame.
+        #   5) Delete the intermediate _lk_* attributes (clean state).
         new_active = []
         for i, tr in enumerate(self.active_tracks):
             if keep_ransac[i]:
@@ -416,7 +434,7 @@ class KLTTracker:
                 self._retire_track(tr)
         self.active_tracks = new_active
 
-        # Refill — eşik altına düştüysek doldur.
+        # Refill — top up if we dropped below the threshold.
         if len(self.active_tracks) < self.refill_threshold:
             mask = self._refill_mask(image.shape[:2])
             new_corners = self._detect_corners(image, mask=mask)
@@ -428,10 +446,10 @@ class KLTTracker:
                 )
                 self.next_track_id += 1
 
-        # prev_image'ı bu frame'e taşı — sonraki çağrı için referans.
+        # Move prev_image forward to this frame — the reference for the next call.
         self.prev_image = image
 
-        # Intermediate state'i temizle (clean exit + bir sonraki çağrıda
-        # yanlış kullanım koruması).
+        # Clean up the intermediate state (clean exit + guards against
+        # misuse on the next call).
         del self._lk_prev_pts, self._lk_next_pts, self._lk_status
         del self._lk_keep_fb, self._lk_keep_disp, self._lk_keep_ransac
