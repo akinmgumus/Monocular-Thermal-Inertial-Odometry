@@ -1,0 +1,13 @@
+# Core scientific stack
+numpy>=1.20,<1.27
+scipy>=1.8
+matplotlib>=3.5
+
+# Computer vision
+opencv-python>=4.5
+
+# Configuration / I/O
+pyyaml>=5.4
+
+# ROS1/ROS2 bag reading without sourcing ROS (used by all extract_*.py scripts)
+rosbags>=0.9
