@@ -1,0 +1,49 @@
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Motivation}
+\label{sec:motivation}
+Autonomous robots and unmanned aerial vehicles (UAVs) increasingly operate in environments where the Global Navigation Satellite System (GNSS) is unavailable or unreliable: indoors, underground, beneath dense canopy, and in disaster zones. In such settings, the platform must estimate its own motion from onboard sensors alone. Visual-inertial odometry (VIO), which fuses a camera with an inertial measurement unit (IMU), has become one of the dominant solutions to this problem, offering metrically-scaled, low-drift state estimation at low cost, weight, and power~\cite{Mourikis_2007, Qin_2018, Bloesch_2015, Campos_2021}.
+
+The robustness of conventional VIO is fundamentally tied to the quality of the visual signal. Standard cameras operate in the visible spectrum and therefore degrade or fail in exactly the conditions that motivate autonomy in the first place: darkness, smoke, dust, fog, and glare. Search-and-rescue, firefighting, subterranean exploration, and night-time operations all routinely present these conditions, in which a visible-light front-end loses the texture it depends on.
+
+Long-wave infrared (LWIR) thermal cameras offer an alternative solution. By sensing emitted thermal radiation rather than reflected visible light, they perceive a scene in total darkness and see through smoke and light fog that would blind a conventional camera~\cite{Gade_2014,Dhrafani_2025}. This makes thermal-inertial odometry (TIO) a promising direction for GNSS-denied navigation in adverse environments.
+
+Thermal imaging, however, is not a drop-in replacement for a visible camera. The modality introduces several characteristics that directly challenge the assumptions of classical feature-based VIO front-ends:
+%
+\begin{itemize}
+  \item \textbf{Low spatial resolution and weak texture.} Thermal sensors typically provide far fewer pixels than visible cameras, and thermal scenes are often smooth and low-contrast, yielding few well-localised corners or trackable gradients. Furthermore, thermal appearance depends primarily on heat distribution rather than geometric texture, meaning that visually distinctive structures may provide less discriminative information in the thermal domain~\cite{Khattak_2019, Vidas_2012}.
+  
+  \item \textbf{Radiometric instability.} Internal non-uniformity correction (NUC)---periodically triggered by an internal shutter, and referred to as flat-field correction (FFC) on some commercial cores---together with automatic gain control (AGC) and scene temperature changes, alter the apparent intensity of a fixed physical point between frames. The remapping applied when high-bit-depth data is rescaled for 8-bit feature front-ends, together with the intensity discontinuity at each shutter event, violates the brightness-constancy assumption underlying optical-flow trackers~\cite{Vidas_2012}.
+  
+  \item \textbf{High-bit-depth raw output.} Many LWIR thermal cameras provide raw radiometric output at 14- or 16-bit precision. Conventional feature detectors and descriptors, however, are typically designed for 8-bit images, requiring a radiometric normalisation step whose choice may affect image consistency across frames~\cite{Khattak_2019, Dhrafani_2025}.
+  
+  \item \textbf{Sensor noise and image artefacts.} Thermal sensors inherently suffer from higher noise levels than visible-light cameras~\cite{Khattak_2019, Dhrafani_2025}. Furthermore, the finite thermal time constant of the microbolometer detector introduces motion blur during fast movement, and commercial thermal devices used on UAVs often apply lossy on-board compression. Together, these factors inject additional uncertainty into feature measurements, severely degrading tracking robustness.
+\end{itemize}
+%
+These properties mean that a pipeline which is correct for visible-light VIO is not guaranteed to perform on thermal data, and that the practical limits and operating conditions of monocular TIO remain an active area of research.
+
+\section{Aim of the Thesis}
+\label{sec:aim}
+
+The aim of this thesis is to investigate the feasibility of monocular feature-based thermal-inertial odometry and to analyse the factors that influence its performance. Rather than proposing a new estimation algorithm, the work pursues a systematic and reproducible evaluation of an established visual-inertial filtering framework on the thermal modality.
+A visible-light visual-inertial baseline is used as a reference against which thermal performance can be interpreted. It also helps distinguish modality-specific effects from the generic behaviour of the estimator.
+
+\section{Thesis Outline}
+\label{sec:outline}
+
+The remainder of this thesis is organised as follows.
+
+Chapter~\ref{ch:related_work} reviews related work in visual-inertial odometry, thermal-inertial odometry, and trajectory evaluation, and identifies the gap this thesis addresses.
+
+Chapter~\ref{ch:problem_formulation} builds on that gap to state the problem, the research questions, the contributions, and the scope of the work.
+
+Chapter~\ref{ch:background} presents the theoretical background: the IMU motion model, the MSCKF formulation, feature tracking, and the error metrics used.
+
+Chapter~\ref{ch:method} describes the implemented pipeline in detail, including the thermal preprocessing, the front-end, the MSCKF back-end, initialisation, and the evaluation framework.
+
+Chapter~\ref{ch:datasets} introduces the datasets used in this work and their sensor suites.
+
+Chapter~\ref{ch:results_and_discussion} presents and discusses the per-dataset results, followed by a cross-dataset analysis of the observed trends and the limitations of monocular thermal-inertial odometry.
+
+Chapter~\ref{ch:conclusion} concludes and outlines directions for future work.

@@ -1,0 +1,112 @@
+\chapter{Related Work}
+\label{ch:related_work}
+
+This chapter reviews the research relevant to monocular thermal-inertial odometry (TIO) and positions the present work within it. Visual-inertial odometry methods can be organised along two largely independent axes. The first is the \emph{estimation back-end}, which traditionally falls into two geometric categories: \emph{filtering-based}---recursive Kalman-filter variants that maintain a single current estimate---or \emph{optimisation-based}, which jointly refine many states over a sliding window of keyframes. Recently, a third back-end paradigm has emerged: \emph{direct motion regression}, which replaces geometric estimation entirely with end-to-end neural networks. 
+
+The second axis is the \emph{visual front-end}, that is, how image information enters the estimator: \emph{feature-based} (indirect) methods track sparse keypoints and descriptors; \emph{direct} methods minimise photometric error on raw pixel intensities; and \emph{learning-based} methods predict visual representations or features. Table~\ref{tab:vio_taxonomy} places the systems reviewed here in this two-dimensional space.
+
+The two axes are largely but not fully independent: end-to-end motion regression is inherently learning-based, so that combination occupies a single cell rather than spanning the row and column.
+
+\begin{table}[h]
+\centering
+\caption{Taxonomy of the visual-inertial odometry methods reviewed in this
+chapter, by estimation back-end and visual front-end. Khattak et al. and
+DeepTIO operate on thermal imagery; the remaining systems were designed for
+visible-spectrum cameras. This thesis studies the filtering / feature-based
+combination (MSCKF) applied to the thermal modality.}
+\label{tab:vio_taxonomy}
+\begin{tabular}{llll}
+\toprule
+\textbf{Back-end Strategy} & \textbf{Feature-based} & \textbf{Direct} & \textbf{Learning-based} \\
+\midrule
+Filtering       & MSCKF (This thesis)      & ROVIO           & --- \\
+Optimisation    & VINS-Mono, PL-VIO,      & Khattak et al.  & --- \\
+                          & ORB-SLAM3               &                 &     \\
+Direct Motion Regression  & ---                    & ---             & DeepTIO \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The chapter proceeds from the methods most distant from the present work to those closest to it: optimisation-based estimators first (Section~\ref{sec:rw_optim}), then filtering-based estimators including the MSCKF used in this thesis (Section~\ref{sec:rw_filter}), then thermal-inertial odometry (Section~\ref{sec:rw_thermal}). Section~\ref{sec:rw_eval} summarises the trajectory-evaluation conventions adopted throughout, and Section~\ref{sec:rw_positioning} states the gap this work addresses.
+
+% =====================================================================
+\section{Optimisation-based Visual-Inertial Odometry}
+\label{sec:rw_optim}
+
+Optimisation-based estimators formulate state estimation as a non-linear least-squares problem over a sliding window of recent states, jointly refining camera poses, velocities, biases, and feature parameters. This typically yields higher accuracy than recursive filtering at the cost of greater computational load. The systems below all use a feature-based (indirect) front-end.
+
+\subsection{VINS-Mono}
+VINS-Mono~\cite{Qin_2018} adopts a tightly coupled non-linear optimisation framework. Instead of maintaining a state estimate only for the current timestep, the system performs estimation over a sliding window of recent keyframes (typically 10--15 frames). Within this window, visual feature observations and inertial measurements are jointly optimised, enabling more accurate state estimation compared to purely filtering-based approaches.
+
+However, this optimisation-based formulation introduces increased computational complexity, as multiple states and feature observations must be optimised simultaneously. In addition, the back-end requires a robust initialisation procedure to estimate the metric scale, gravity direction, and initial feature depths. To achieve reliable initialisation, the system typically requires sufficient excitation motion so that the IMU measurements provide enough information for accurate parameter estimation.
+
+Furthermore, the system integrates additional modules such as relocalisation and global pose-graph optimisation, which enable long-term consistency and loop closure. Due to these components, the framework extends beyond pure odometry and shares many characteristics with a full SLAM system. While this design significantly improves robustness and global consistency, it also increases computational requirements compared to lightweight odometry pipelines.
+
+\subsection{PL-VIO}
+
+While conventional point-based VIO systems often degrade in environments with limited visual texture, PL-VIO~\cite{He_2018} addresses this limitation by incorporating line-segment features into the state estimation process. The system operates within a tightly-coupled optimisation-based visual-inertial framework in which both point features and structural line segments are jointly estimated within a sliding window.
+
+This dual-feature representation improves robustness where point features alone are insufficient, such as long corridors or scenes dominated by planar structures. Such conditions often lead to feature starvation, where traditional point detectors fail to extract a sufficient number of reliable keypoints. In contrast, line segments capture extended geometric structures and typically remain detectable even in low-texture regions, providing additional spatial constraints for the optimisation.
+
+Although PL-VIO was originally developed for conventional visual imagery, the use of structural line features can also be beneficial in thermal imaging, where distinct corner features are often sparse. In thermal images, temperature discontinuities along structural elements—such as door frames or wall boundaries—can produce stable edge structures suitable for line-based feature extraction. Consequently, incorporating line features can improve odometry robustness in environments where reliable point features are limited.
+
+\subsection{ORB-SLAM3}
+
+While visual-inertial odometry focuses primarily on local state estimation, full Simultaneous Localisation and Mapping (SLAM) frameworks extend this capability by constructing a persistent map of the environment and performing loop closure to correct accumulated drift. A representative example is ORB-SLAM3~\cite{Campos_2021}, which integrates visual and inertial measurements within a multi-map SLAM architecture. The system maintains a global pose graph and performs loop-closure detection and global bundle adjustment to ensure long-term consistency of the estimated trajectory.
+
+While such capabilities significantly improve global accuracy and enable large-scale mapping, they also introduce additional computational and memory requirements due to the need for maintaining and optimising a global map representation. On resource-constrained Micro Aerial Vehicles (MAVs), particularly those equipped with thermal cameras, the onboard processor is often already heavily utilised by front-end image processing operations such as radiometric normalisation and feature extraction. Under these conditions, lightweight odometry pipelines are often preferred in practice to ensure reliable real-time performance.
+
+% =====================================================================
+\section{Filtering-based Visual-Inertial Odometry}
+\label{sec:rw_filter}
+
+Filtering-based estimators maintain a single recursive estimate, propagating it with the IMU and correcting it with visual measurements. They are computationally lighter than optimisation-based methods and therefore attractive for resource-constrained platforms. This is the paradigm adopted by the present work. The two systems below illustrate the two front-end styles within this family: a direct method (ROVIO) and a feature-based method (the MSCKF).
+
+\subsection{ROVIO: Robust Visual-Inertial Odometry Using a Direct EKF}
+ROVIO~\cite{Bloesch_2015} integrates IMU and camera measurements within a tightly-coupled iterated Extended Kalman Filter (IEKF) framework. Inertial measurements are used during the prediction step, while visual observations provide corrective updates to the filter state. This tightly-coupled fusion allows the system to resolve the metric scale ambiguity inherent to purely monocular visual odometry, and to maintain tracking under low-parallax motion such as pure rotation.
+
+Unlike traditional feature-based pipelines that rely on descriptor matching (e.g., ORB or SIFT), ROVIO follows a patch-based direct approach. While it extracts discrete keypoints to initialise tracking, it avoids descriptor computation entirely; instead, it tracks multi-level image patches around these keypoints by directly minimising the photometric error within the filter innovation.
+
+To maintain robustness during aggressive motion and large inter-frame displacements, the system uses IMU-based motion prediction as a prior for the expected patch locations, together with a coarse-to-fine tracking strategy based on image pyramids. If a patch becomes significantly distorted or tracking fails, it is discarded to reject outliers.
+
+\subsection{MSCKF: A Multi-State Constraint Kalman Filter}
+The Multi-State Constraint Kalman Filter (MSCKF), introduced by Mourikis and Roumeliotis~\cite{Mourikis_2007}, is a foundational \emph{feature-based} filtering approach and the back-end adopted in this thesis. Like other tightly-coupled methods it propagates the state with inertial measurements and corrects it with visual observations; its defining characteristic is the way it incorporates visual information \emph{without} including landmark positions in the filter state. In conventional EKF-SLAM formulations every observed 3D feature is added to the state vector, causing its dimension---and therefore the computational cost---to grow without bound as the map expands.
+
+The MSCKF avoids this growth by maintaining a sliding window of recent camera poses in the state instead of the landmarks. When a feature has been tracked across several of these poses and is about to leave the field of view, all of its observations are processed together to form a single geometric constraint linking those poses. The feature is triangulated and then algebraically eliminated from the update through a null-space projection, so it never enters the state vector. As a result the computational cost remains linear in the number of features and is bounded by the size of the pose window, which makes the filter well suited to resource-constrained platforms.
+
+Because the MSCKF operates on sparse keypoint tracks rather than photometric patches, it combines the efficiency of a filtering back-end with conventional feature front-ends such as Kanade-Lucas-Tomasi (KLT) optical flow or ORB descriptors. A known limitation of the original formulation is estimator inconsistency arising from spurious information gain along the unobservable directions of the problem (global position and yaw); subsequent work mitigates this through observability-constrained or First-Estimates Jacobian (FEJ) techniques~\cite{Huang_2010, Li_Mourikis_2013}. The pipeline developed in this thesis adopts the MSCKF for precisely these reasons---bounded computational cost and direct compatibility with standard thermal feature front-ends---and incorporates FEJ anchoring to preserve consistency.
+
+% =====================================================================
+\section{Thermal-Inertial Odometry}
+\label{sec:rw_thermal}
+The methods above were designed for visible-spectrum cameras. Thermal imaging introduces modality-specific challenges---low contrast, radiometric instability, and periodic sensor calibration---that have motivated dedicated thermal-inertial odometry systems. In the existing literature, two contrasting strategies have predominantly emerged to tackle these: a direct, photometric formulation and an end-to-end learning approach. Notably, the classical feature-based filtering paradigm---despite its dominance in visible-light odometry---has remained largely underexplored in the thermal domain, presenting a gap that this thesis explicitly targets through a tailored preprocessing and feature-tracking pipeline.
+
+\subsection{Keyframe-based Direct Thermal-Inertial Odometry}
+To address the challenges of thermal imaging, a direct, keyframe-based thermal–inertial odometry system was introduced in~\cite{Khattak_2019}. It employs a keyframe-based non-linear optimisation framework to jointly estimate the camera trajectory and inertial states while minimising photometric residuals. Unlike conventional pipelines that convert the sensor's native 14-bit thermal images into an 8-bit representation, the proposed method directly processes the raw 14-bit radiometric data.
+
+By operating directly on the raw radiometric data, the framework preserves the intensity information necessary for robust photometric alignment. In addition, thermal cameras periodically perform Flat-Field Correction (FFC) to compensate for internal sensor noise and non-uniformities. During this calibration the camera temporarily freezes and becomes visually unavailable, causing short intervals of sensor blindness. To mitigate this, the system relies on tightly coupled inertial measurements, which provide motion priors that allow the estimator to maintain continuous state propagation during these interruptions.
+
+\subsection{DeepTIO}
+
+A fundamentally different strategy replaces hand-designed geometric estimation with learned models. DeepTIO~\cite{Saputra_2020} is a deep-learning thermal-inertial odometry system that regresses motion directly from thermal image sequences and inertial measurements using neural networks, rather than tracking explicit features and propagating a filter.
+
+Its central idea is \emph{visual hallucination}: a network is trained to predict the visual (RGB) feature representation that would correspond to a given thermal input, transferring knowledge learned in the data-rich visible domain into the data-poor thermal domain. This compensates for the weak texture and low contrast that limit conventional thermal feature extraction. The approach is robust to several modality-specific artefacts that are difficult to model explicitly, but, like other learning-based methods, it depends on large quantities of training data, offers limited interpretability, and its accuracy on environments and platforms unseen during training is not guaranteed.
+
+DeepTIO represents the learning-based branch of thermal-inertial odometry, in contrast to the classical, geometric pipelines discussed above. The present work follows the classical route, prioritising transparency and the ability to analyse how each component of the pipeline behaves under varying conditions.
+
+% =====================================================================
+\section{Trajectory Evaluation}
+\label{sec:rw_eval}
+
+Quantitative comparison of an estimated trajectory against a reference relies on two standard metrics introduced for SLAM and odometry benchmarking~\cite{Sturm_2012}. The Absolute Trajectory Error (ATE) measures global consistency by aligning the estimated trajectory to the reference and computing the root-mean-square positional difference over the whole run. The Relative Pose Error (RPE) instead measures local drift by comparing relative motions over fixed sub-intervals, and is therefore less sensitive to a single global misalignment.
+
+A subtle but important aspect is the choice of alignment. For monocular visual odometry, absolute scale is unobservable, so trajectories must be aligned with a similarity transform ($\mathrm{Sim}(3)$) that includes scale. In visual-inertial estimation, however, the accelerometer and gravity render both metric scale and the global roll and pitch observable. Applying a scale-correcting $\mathrm{Sim}(3)$ alignment would conceal the scale error that the inertial channel is meant to resolve, and similarly, applying a full 6-DOF rigid-body transform ($\mathrm{SE}(3)$) would improperly absorb roll and pitch drift into the alignment. Therefore, the mathematically consistent approach recommended for VIO is a 4-DOF alignment (3D position and yaw)~\cite{Zhang_2018}. Accordingly, this thesis reports ATE under $4$-DOF alignment; RPE, being computed from relative motions, is reported without alignment.
+
+% =====================================================================
+\section{Positioning of this Thesis}
+\label{sec:rw_positioning}
+
+Despite substantial progress in visual-inertial odometry, the majority of mature systems---whether filtering-based (MSCKF, ROVIO) or optimisation-based (VINS-Mono, PL-VIO, ORB-SLAM3)---are designed for visible-spectrum cameras and assume sufficient scene texture and a stable photometric appearance. 
+Thermal-inertial odometry has so far been approached mainly through direct, photometric formulations on raw radiometric data~\cite{Khattak_2019, Doer_2021} or through learning-based estimators~\cite{Saputra_2020}, and frequently relies on a stereo baseline or a single, carefully tuned platform. As Table~\ref{tab:vio_taxonomy} makes explicit, the filtering / feature-based combination---the MSCKF---is well established on visible-spectrum data but has not been systematically characterised on thermal imagery, particularly across heterogeneous platforms and under imperfect preprocessing and calibration.
+
+This is the gap the present thesis addresses. The specific problem statement, the research questions that follow from this gap, the contributions, and the scope of the study are formulated in Chapter~\ref{ch:problem_formulation}.

@@ -1,0 +1,71 @@
+\chapter{Datasets}
+\label{ch:datasets}
+
+This chapter introduces the datasets used for evaluation, their sensor suites, ground-truth sources, and the motion profiles that define the operating regimes tested.
+
+\section{Overview and Sensor Suites}
+\label{sec:d_overview}
+The pipeline is evaluated on four datasets spanning visible and thermal imagery, indoor and outdoor scenes, and aerial and ground platforms; a fifth (AerialTN) is partially integrated but excluded from the core evaluation (Section~\ref{sec:d_aerialtn}). This spread is deliberate: it exposes the estimator to a wide range of the operating regimes---platform velocity, scene depth, and thermal contrast---whose influence is the subject of RQ2, while the visible-light dataset serves as a modality-independent correctness baseline. Table~\ref{tab:d_overview} summarises the sensor suites and motion profiles; the individual datasets follow in the subsequent sections.
+
+\begin{table}[htbp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\caption{Datasets used for evaluation. AerialTN is only partially integrated (Section~\ref{sec:d_aerialtn}); the left camera is used throughout.}
+\label{tab:d_overview}
+\begin{tabularx}{\textwidth}{@{}l l >{\raggedright\arraybackslash}X l >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Dataset} & \textbf{Modality} & \textbf{Camera} & \textbf{IMU} & \textbf{Reference / platform} \\
+\midrule
+EuRoC (MH\_03)            & visible  & Aptina MT9V034, $752\times480$, $20$~Hz         & ADIS16448, $200$~Hz     & mocap; MAV, indoor \\
+FIReStereo (frick\_1)     & thermal  & Boson+, $640\times512$, $16$~Hz & Epson G365, $200$~Hz    & LiDAR-inertial; UAS, outdoor \\
+ROVTIO (alt1)             & thermal  & Tau2, $640\times512$, $25$~Hz   & VN-100, $168$~Hz        & Vicon; drone, indoor \\
+STheReo (valley\_evening) & thermal  & FLIR A65, $640\times512$, $14$-bit                & Xsens MTi-300, $200$~Hz & local pose; vehicle, outdoor \\
+AerialTN                  & thermal  & Purpleriver Mini640, $640\times512$ & $472$~Hz                & PX4 EKF2; drone \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{EuRoC MAV (Visible-Light Baseline)}
+\label{sec:d_euroc}
+EuRoC~\cite{Burri_2016} is a visible-light micro-aerial-vehicle dataset recorded indoors with synchronised global-shutter stereo cameras (Aptina MT9V034, WVGA $752\times480$ monochrome, $20$~Hz; only the left camera is used) and an ADIS16448 IMU at $200$~Hz, with millimetre-accurate motion-capture ground truth. It contains none of the thermal-specific artefacts of Section~\ref{sec:bg_thermal}, and is therefore used here as a modality-independent sanity check: successful metric estimation on EuRoC establishes that the estimator itself is correct, so that any degradation on the thermal datasets can be attributed to the modality rather than to an implementation fault (RQ1). The MH\_03 sequence, with moderate dynamics, is used.
+
+\section{FIReStereo}
+\label{sec:d_firestereo}
+FIReStereo~\cite{Dhrafani_2025} is an outdoor thermal dataset recorded from an uncrewed aerial system over forest and urban scenes in visually degraded conditions. It provides a stereo FLIR Boson+ thermal camera ($640\times512$, $16$-bit, $\sim16$~Hz; only the left camera is used), an Epson G365 IMU at $200$~Hz, and a LiDAR-inertial trajectory used as pseudo-ground-truth---an estimate rather than an external reference, and treated accordingly. The frick\_1 sequence is used; the platform moves slowly at altitude, giving the low parallax that stresses monocular triangulation.
+
+\section{ROVTIO}
+\label{sec:d_rovtio}
+ROVTIO~\cite{ROVTIO} is an indoor thermal-inertial dataset recorded on a small aerial platform. It provides a FLIR Tau2 thermal camera ($640\times512$, $16$-bit, $\sim25$~Hz) with a fisheye (equidistant) lens, a VectorNav VN-100 IMU at $\sim168$~Hz, and Vicon motion-capture ground truth at $\sim6$~Hz. The alt1 sequence begins with the platform stationary, which enables the gravity-aligned static initialisation of Section~\ref{sec:m_init}, and the indoor scene provides ample parallax, making it a well-conditioned indoor test case for examining both the regime in which monocular thermal odometry tracks and the point at which it diverges.
+
+\section{STheReo}
+\label{sec:d_sthereo}
+STheReo~\cite{ssyun-2022-iros} is a vehicle-mounted outdoor dataset providing $14$-bit stereo thermal imagery from a FLIR A65 ($640\times512$; only the left camera is used), an Xsens MTi-300 IMU at $200$~Hz, and a reference trajectory supplied as a local pose (position and Euler angles). The valley\_evening sequence is characterised by fast, largely forward motion at low thermal contrast---a combination adverse for monocular estimation, since forward motion yields little parallax on features near the direction of travel. It is included as an explicit negative-result case that marks an operating-regime limit of monocular thermal odometry (RQ2).
+
+\section{AerialTN}
+\label{sec:d_aerialtn}
+AerialTN is a thermal dataset recorded on a drone by a collaborator, using a Purpleriver Mini640 thermal camera, with an IMU at $472$~Hz and the platform's own PX4 EKF2 estimate as a reference. It is excluded from the core evaluation for two reasons. First, an unresolved discrepancy in the IMU axis convention reported by the flight stack could not be reconciled with the other sensor streams, which prevents a correct inertial--visual fusion. Second, and more fundamentally for this study, the thermal imagery is delivered not as raw high-bit-depth frames but as an $8$-bit, H.264-compressed video stream; the preprocessing chain central to the evaluation---the normalisation of the $14$/$16$-bit radiometric output and the contrast-enhancement ordering of Section~\ref{sec:m_preproc}---therefore cannot be applied on the same footing as on the other datasets, and the lossy compression further degrades feature consistency, so any result would not be comparable. The dataset is nonetheless documented here, as it was a suggested candidate, and its integration scaffolding is retained for future work should the axis convention be confirmed and a raw stream become available.
+
+\section{Ground-Truth and Calibration Provenance}
+\label{sec:d_provenance}
+The datasets differ in the trustworthiness of their references, which matters when interpreting the reported errors. EuRoC and ROVTIO provide external motion-capture ground truth (Leica/Vicon), the most reliable; FIReStereo provides a LiDAR-inertial estimate and STheReo a local pose, both themselves the output of an estimator and therefore treated as pseudo-ground-truth rather than an absolute reference; AerialTN's PX4 EKF2 estimate is the least authoritative. Camera intrinsics and camera--IMU extrinsics are taken as provided by each dataset---a plumb-bob model for EuRoC and FIReStereo, an equidistant fisheye model for ROVTIO---and treated as fixed (Section~\ref{sec:scopeanddelimitations}).
+
+The IMU noise parameters are the only sensor-model quantities varied in this study (RQ3), and their provenance differs by dataset. EuRoC provides IMU noise parameters characterised for its specific unit and is treated as the characterised-reference case; for the thermal datasets (FIReStereo, ROVTIO, STheReo) only datasheet figures for the specific inertial unit (Epson G365, VectorNav VN-100, Xsens MTi-300) are available and are used directly. Their adequacy therefore varies across datasets---characterised for EuRoC, datasheet-only for the thermal datasets---and its effect on trajectory drift and filter consistency is examined in Chapter~\ref{ch:results_and_discussion}. Table~\ref{tab:d_imu_noise} gives the resulting values, used directly as $\sigma_g, \sigma_a, \sigma_{bg}, \sigma_{ba}$ in the process-noise covariance $\mathbf{Q}$ of Appendix~\ref{ch:appendix} (Section~\ref{sec:a_gq}).
+
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{IMU noise parameters used directly as $\sigma_g, \sigma_a, \sigma_{bg}, \sigma_{ba}$ in the process-noise covariance $\mathbf{Q}$ (Appendix~\ref{ch:appendix}, Section~\ref{sec:a_gq}), without inflation. EuRoC's are characterised for its specific unit; the remainder are datasheet figures for the named IMU.}
+\label{tab:d_imu_noise}
+\begin{tabular}{ll rrrr}
+\toprule
+\textbf{Dataset} & \textbf{IMU} & $\sigma_g$ & $\sigma_a$ & $\sigma_{bg}$ & $\sigma_{ba}$ \\
+ & & \scriptsize[rad/s/$\sqrt{\text{Hz}}$] & \scriptsize[m/s$^2$/$\sqrt{\text{Hz}}$] & \scriptsize[rad/s$^2$/$\sqrt{\text{Hz}}$] & \scriptsize[m/s$^3$/$\sqrt{\text{Hz}}$] \\
+\midrule
+EuRoC       & ADIS16448     & $1.70\times10^{-4}$ & $2.00\times10^{-3}$ & $1.94\times10^{-5}$ & $3.00\times10^{-3}$ \\
+FIReStereo  & Epson G365    & $1.06\times10^{-4}$ & $8.56\times10^{-4}$ & $1.00\times10^{-6}$ & $1.00\times10^{-4}$ \\
+ROVTIO      & VectorNav VN-100 & $2.80\times10^{-4}$ & $6.30\times10^{-3}$ & $6.20\times10^{-5}$ & $1.00\times10^{-4}$ \\
+STheReo     & Xsens MTi-300 & $1.75\times10^{-4}$ & $5.89\times10^{-4}$ & $4.80\times10^{-6}$ & $1.47\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{table}

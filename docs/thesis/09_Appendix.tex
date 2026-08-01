@@ -1,0 +1,147 @@
+\chapter{Appendix}
+\label{ch:appendix}
+
+This appendix collects two kinds of supplementary material: Section~\ref{sec:a_gq} gives the explicit noise-input matrix $\mathbf{G}$ and discretised process-noise covariance $\mathbf{Q}$ referenced from Section~\ref{sec:bg_imu_error}, and Sections~\ref{sec:a_euroc}--\ref{sec:a_sthereo} supply trajectory and diagnostics figures for run configurations that are reported only as numbers in Chapter~\ref{ch:results_and_discussion}.
+
+\section{Error-State Propagation Noise: Construction of \texorpdfstring{$\mathbf{G}$}{G} and \texorpdfstring{$\mathbf{Q}$}{Q}}
+\label{sec:a_gq}
+Section~\ref{sec:bg_imu_error} gives the continuous error-state dynamics and states that the white-noise terms $(\mathbf{n}_g, \mathbf{n}_a, \mathbf{n}_{bg}, \mathbf{n}_{ba})$ enter through a noise-input matrix $\mathbf{G}$, which together with their spectral densities defines the discrete process-noise covariance $\mathbf{Q}$. This section makes that construction explicit, using the error-state ordering $\tilde{\mathbf{x}}_I = [\,\delta\boldsymbol{\theta}^\top, \delta\mathbf{b}_g^\top, \delta\mathbf{v}^\top, \delta\mathbf{b}_a^\top, \delta\mathbf{p}^\top\,]^\top$ already declared in Eq.~\ref{eq:bg_error_state}, which pairs each error component with the bias driving it and matches the implementation directly.
+
+Collecting the noise terms of Eqs.~\ref{eq:bg_error_state}--\ref{eq:bg_att_error} into $\mathbf{n} = [\,\mathbf{n}_g^\top, \mathbf{n}_a^\top, \mathbf{n}_{bg}^\top, \mathbf{n}_{ba}^\top\,]^\top \in \mathbb{R}^{12}$, the continuous error dynamics can be written $\dot{\tilde{\mathbf{x}}}_I = \mathbf{F}\tilde{\mathbf{x}}_I + \mathbf{G}\mathbf{n}$, with the $15\times12$ noise-input matrix
+\begin{equation}
+  \mathbf{G} =
+  \begin{bmatrix}
+    -\mathbf{I}_3 & \mathbf{0} & \mathbf{0} & \mathbf{0} \\
+    \mathbf{0} & \mathbf{0} & \mathbf{I}_3 & \mathbf{0} \\
+    \mathbf{0} & -\mathbf{R}_I^W & \mathbf{0} & \mathbf{0} \\
+    \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{I}_3 \\
+    \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0}
+  \end{bmatrix},
+  \label{eq:a_G}
+\end{equation}
+whose row blocks follow the state order above and whose column blocks follow $\mathbf{n}$: the $-\mathbf{I}_3$ and $\mathbf{I}_3$ blocks read off the noise terms directly attached to $\dot{\delta\boldsymbol{\theta}}$, $\dot{\delta\mathbf{b}}_g$, $\dot{\delta\mathbf{b}}_a$ in Section~\ref{sec:bg_imu_error}; the $-\mathbf{R}_I^W$ block does the same for $\dot{\delta\mathbf{v}}$; and the position row is zero because $\dot{\delta\mathbf{p}} = \delta\mathbf{v}$ has no direct noise term, only the noise it inherits from $\delta\mathbf{v}$ through propagation.
+
+The four noise processes are modelled as mutually independent white noise with constant continuous-time spectral densities $\sigma_g^2, \sigma_a^2, \sigma_{bg}^2, \sigma_{ba}^2$ (the gyroscope and accelerometer noise densities and bias random-walk rates of Section~\ref{sec:m_params}, whose dataset-specific values are given in Chapter~\ref{ch:datasets}), so $\mathbf{n}$ has spectral density $\mathbf{Q}_c^{\text{raw}} = \operatorname{blockdiag}(\sigma_g^2\mathbf{I}_3,\ \sigma_a^2\mathbf{I}_3,\ \sigma_{bg}^2\mathbf{I}_3,\ \sigma_{ba}^2\mathbf{I}_3)$. The continuous-time process-noise covariance of the error state is then $\mathbf{Q}_c = \mathbf{G}\mathbf{Q}_c^{\text{raw}}\mathbf{G}^\top$, which block-diagonalises because each row block of $\mathbf{G}$ has non-zero entries in only one noise column:
+\begin{equation}
+  \mathbf{Q}_c = \operatorname{blockdiag}\!\big(\sigma_g^2\mathbf{I}_3,\ \ \sigma_{bg}^2\mathbf{I}_3,\ \ \sigma_a^2(\mathbf{R}_I^W)(\mathbf{R}_I^W)^\top,\ \ \sigma_{ba}^2\mathbf{I}_3,\ \ \mathbf{0}\big).
+  \label{eq:a_Qc}
+\end{equation}
+Because $\mathbf{R}_I^W$ is orthogonal, $\mathbf{R}_I^W(\mathbf{R}_I^W)^\top = \mathbf{I}_3$, so the velocity block reduces to $\sigma_a^2\mathbf{I}_3$ regardless of the current attitude: an isotropic (rotationally invariant) noise spectral density in the body frame remains isotropic in the world frame under an orthogonal rotation. Equation~\ref{eq:a_Qc} therefore simplifies to the attitude-independent diagonal
+\begin{equation}
+  \mathbf{Q}_c = \operatorname{diag}\!\big(\sigma_g^2, \sigma_g^2, \sigma_g^2,\ \ \sigma_{bg}^2, \sigma_{bg}^2, \sigma_{bg}^2,\ \ \sigma_a^2, \sigma_a^2, \sigma_a^2,\ \ \sigma_{ba}^2, \sigma_{ba}^2, \sigma_{ba}^2,\ \ 0, 0, 0\big),
+  \label{eq:a_Qc_diag}
+\end{equation}
+which is exactly the fixed matrix built once from the dataset's noise parameters and held constant across the run, since it depends on the noise densities alone and not on the current state estimate.
+
+Given the first-order discrete transition $\boldsymbol{\Phi} = \mathbf{I} + \mathbf{F}\Delta t$ of Section~\ref{sec:bg_imu_error}, the exact discrete process-noise covariance over one propagation interval is the Van Loan integral $\mathbf{Q}_d = \int_0^{\Delta t}\boldsymbol{\Phi}(\tau)\,\mathbf{Q}_c\,\boldsymbol{\Phi}(\tau)^\top\,\mathrm{d}\tau$. At the IMU rate used here ($\Delta t \approx 0.01$~s), the zeroth-order term dominates and the implementation retains only that term,
+\begin{equation}
+  \mathbf{Q}_d \approx \mathbf{Q}_c\,\Delta t,
+  \label{eq:a_Qd}
+\end{equation}
+consistent with, and at the same order as, the first-order truncation already used for $\boldsymbol{\Phi}$. The terms this omits are $O(\Delta t^2)$ corrections that couple the noise entering through $\delta\mathbf{v}$ into the $\delta\mathbf{p}$--$\delta\mathbf{v}$ covariance block (from $\mathbf{F}\mathbf{Q}_c + \mathbf{Q}_c\mathbf{F}^\top$) and an $O(\Delta t^3)$ term for the $\delta\mathbf{p}$--$\delta\mathbf{p}$ block; at $100$~Hz these are negligible next to the zeroth-order term and are not implemented.
+
+\section{EuRoC}
+\label{sec:a_euroc}
+The KLT configuration (Figure~\ref{fig:a_euroc_klt}) complements the ORB baseline of Section~\ref{sec:r_euroc}: after the start-up transient described there, it tracks the reference for the remainder of the run.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/euroc_mh03_KLT_CLAHEOFF_traj.png}
+        \caption{Estimated trajectory against ground truth: position components over time and top-down XY.}
+        \label{fig:a_euroc_klt_traj}
+    \end{subfigure}
+
+    \vspace{0.6em}
+
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/euroc_mh03_KLT_CLAHEOFF_diag.png}
+        \caption{Diagnostics: absolute position error and front-end track counts over time.}
+        \label{fig:a_euroc_klt_diag}
+    \end{subfigure}
+
+    \caption{EuRoC (KLT, CLAHE off): after the start-up transient (Section~\ref{sec:r_euroc}) the estimate locks onto the reference and tracks it for the remainder of the run.}
+    \label{fig:a_euroc_klt}
+\end{figure}
+
+\section{ROVTIO}
+\label{sec:a_rovtio}
+Figure~\ref{fig:a_rovtio_klt_off} shows the KLT, CLAHE-off configuration referred to in Section~\ref{sec:r_rovtio} as ``nearly failing'': tracking window $[0,\,20]$~s, ATE$_\text{track}=8.83$~m, RPE$_\text{track}=4.64$~m/m. Figure~\ref{fig:a_rovtio_klt_on} shows the KLT counterpart of the adopted Norm$\rightarrow$CLAHE ordering (CLAHE on), which tracks somewhat longer and considerably more accurately (window $[20,\,50]$~s, ATE$_\text{track}=3.84$~m, RPE$_\text{track}=0.74$~m/m).
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_KLT_CLAHEOFF_CLAHE-NORM_traj_tracked.png}
+        \caption{Tracking window $[0,\,20]$~s.}
+        \label{fig:a_rovtio_klt_off_traj}
+    \end{subfigure}\\[0.6em]
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_KLT_CLAHEOFF_CLAHE-NORM_diag.png}
+        \caption{Diagnostics: absolute position error and track counts over time.}
+        \label{fig:a_rovtio_klt_off_diag}
+    \end{subfigure}
+    \caption{ROVTIO (KLT, CLAHE off): the weakest of the four ROVTIO configurations, diverging by $t=20$~s.}
+    \label{fig:a_rovtio_klt_off}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_KLT_CLAHEON_NORM-CLAHE_traj_tracked.png}
+        \caption{Tracking window $[20,\,50]$~s.}
+        \label{fig:a_rovtio_klt_on_traj}
+    \end{subfigure}\\[0.6em]
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_KLT_CLAHEON_NORM-CLAHE_diag.png}
+        \caption{Diagnostics: absolute position error and track counts over time.}
+        \label{fig:a_rovtio_klt_on_diag}
+    \end{subfigure}
+    \caption{ROVTIO (KLT, CLAHE on, Norm$\rightarrow$CLAHE): the adopted-ordering KLT run, close behind the best ORB configuration of Section~\ref{sec:r_rovtio}.}
+    \label{fig:a_rovtio_klt_on}
+\end{figure}
+
+\section{STheReo}
+\label{sec:a_sthereo}
+Figures~\ref{fig:a_sthereo_orb_off} and~\ref{fig:a_sthereo_klt_off} show the CLAHE-off counterparts of the ORB and KLT runs discussed in Section~\ref{sec:r_sthereo}. Both survive substantially longer than the CLAHE-on ORB run (to $t=120$~s and $t=270$~s respectively), consistent with CLAHE mitigating rather than causing the fragility discussed there.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_ORB_CLAHEOFF_NORM-CLAHE_traj_tracked.png}
+        \caption{Tracking window $[0,\,120]$~s.}
+        \label{fig:a_sthereo_orb_off_traj}
+    \end{subfigure}\\[0.6em]
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_ORB_CLAHEOFF_NORM-CLAHE_diag.png}
+        \caption{Diagnostics: absolute position error and track counts over time.}
+        \label{fig:a_sthereo_orb_off_diag}
+    \end{subfigure}
+    \caption{STheReo (ORB, CLAHE off): survives to $t=120$~s, longer than the CLAHE-on ORB run of Figure~\ref{fig:r_sthereo_break} but still far short of KLT.}
+    \label{fig:a_sthereo_orb_off}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_KLT_CLAHEOFF_NORM-CLAHE_traj_tracked.png}
+        \caption{Tracking window $[0,\,270]$~s.}
+        \label{fig:a_sthereo_klt_off_traj}
+    \end{subfigure}\\[0.6em]
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_KLT_CLAHEOFF_NORM-CLAHE_diag.png}
+        \caption{Diagnostics: absolute position error and track counts over time.}
+        \label{fig:a_sthereo_klt_off_diag}
+    \end{subfigure}
+    \caption{STheReo (KLT, CLAHE off): survives to $t=270$~s at a somewhat higher RPE ($1.11$~m/m) than the CLAHE-on KLT run of Figure~\ref{fig:r_sthereo} ($0.77$~m/m), consistent with CLAHE mitigating the brightness-constancy violation of Section~\ref{sec:r_failure}.}
+    \label{fig:a_sthereo_klt_off}
+\end{figure}

@@ -1,0 +1,311 @@
+\chapter{Results and Discussion}
+\label{ch:results_and_discussion}
+
+This chapter presents the per-dataset results and discusses them together, relating tracking performance to operating regime, preprocessing, and calibration, and answering the research questions.
+
+\section{Evaluation Protocol}
+\label{sec:r_protocol}
+Each dataset is run in four configurations---the two front-ends (ORB, KLT) crossed with CLAHE off and on---under the shared parameter set of Section~\ref{sec:m_params} and the adopted Norm$\rightarrow$CLAHE preprocessing order (Section~\ref{sec:r_preproc}); the visible-light EuRoC sequence is included in two front-end configurations as a modality-independent baseline. Absolute Trajectory Error (ATE) is reported after $4$-DOF (position and yaw) alignment, and Relative Pose Error (RPE) as the alignment-invariant per-metre translational error computed with \texttt{evo}. Because the pipeline exhibits a recurring transient--track--divergence pattern rather than a clean run, two ATE figures are distinguished: the full-trajectory ATE over the whole run, and the tracking-window ATE over the manually delimited interval in which the estimate follows the reference (the start-up transient and the post-divergence blow-up are excluded). The divergence and settling instants are read by hand off the position-versus-time plots, as the transient magnitudes on the thermal datasets (a $5$--$10$~m start-up excursion before genuine tracking) make any fixed automatic threshold unreliable; each run additionally logs filter-consistency indicators (time-averaged normalised innovation NIS/df, and the used/in track ratio) and front-end track counts over time.
+
+\section{Baseline Validation on EuRoC}
+\label{sec:r_euroc}
+On the visible-light EuRoC MH\_03 sequence the estimator recovers the metric trajectory across the whole run. With the ORB front-end it follows the reference from start to finish at a full-trajectory ATE of $0.38$~m and a maximum instantaneous error of only $0.75$~m (Figure~\ref{fig:r_euroc}), so scale, attitude and position are all recovered correctly---the strongest available evidence that the MSCKF back-end is sound. The KLT front-end behaves similarly but with a brief start-up transient: the drone is already manoeuvring at the start and the filter needs excitation before scale and velocity become observable, so it diverges momentarily and only locks on from roughly $t=20$~s, which inflates its full-run ATE to $1.05$~m; restricting the evaluation to the post-transient window brings this down to $0.46$~m, though a residual excursion of up to $3$~m remains on one axis. The apparent disagreement of the raw whole-run $4$-DOF-aligned plot for KLT is largely this transient---aligning over the whole run lets the initial excursion rotate and translate the fit---and it shrinks once the alignment is restricted to the tracked interval. Either front-end confirms that the estimator can recover metric visual-inertial odometry when the modality is benign, so any degradation observed on the thermal datasets is attributable to the thermal modality (imagery and IMU parametrisation) rather than to an implementation fault, answering RQ1. The result does not by itself prove thermal viability, however, since EuRoC changes both the modality (visible vs.\ thermal) and the IMU quality simultaneously; it is a correctness check, not a like-for-like comparison.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/euroc_mh03_ORB_CLAHEOFF_traj.png}
+        \caption{Estimated trajectory against ground truth: position components over time and top-down XY.}
+        \label{fig:r_euroc_traj}
+    \end{subfigure}
+
+    \vspace{0.6em}
+
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/euroc_mh03_ORB_CLAHEOFF_diag.png}
+        \caption{Diagnostics: absolute position error and front-end track counts over time.}
+        \label{fig:r_euroc_diag}
+    \end{subfigure}
+
+    \caption{EuRoC visible-light baseline (ORB, CLAHE off): the estimate follows the motion-capture reference for the whole run at a $0.38$~m ATE, confirming back-end correctness (RQ1).}
+    \label{fig:r_euroc}
+\end{figure}
+
+\newpage
+
+\section{Preprocessing Order: CLAHE and Normalisation}
+\label{sec:r_preproc}
+The thermal front-end requires two operators that do not commute: contrast enhancement (CLAHE) and 8-bit normalisation. The order was selected empirically on the ROVTIO sequence, a well-conditioned indoor thermal case, before fixing it for the remaining datasets. Both orderings were run for each front-end (ORB, KLT) with CLAHE enabled; with CLAHE disabled the two orderings are identical, so a single CLAHE-off run per front-end is included as a reference. Because monocular scale is weakly observed on this indoor sequence, the absolute trajectory error (ATE) is dominated by scale error and is a misleading basis for ranking; the alignment-invariant relative pose error (RPE, per metre) is therefore taken as the primary criterion. Crucially, both metrics are computed over the same manually delimited tracking window (rather than the whole run), so that the ranking reflects tracking fidelity and is not distorted by the post-divergence blow-up.
+
+\begin{table}[htbp]
+\centering
+\caption{Preprocessing-order comparison on ROVTIO (\texttt{alt1}), with \emph{all} metrics computed over the tracking window. Tracking-window ATE and tracking-window RPE (evo, per metre); lower is better. RPE is the ranking criterion (alignment-invariant). CLAHE-off is shown as a reference (order not applicable). The lower on-run RPE per front-end is in bold.}
+\label{tab:r_preproc_rovtio}
+\begin{tabular}{llrr}
+\toprule
+Front-end & Preprocessing & track ATE [m] & RPE [m/m] \\
+\midrule
+ORB & CLAHE-off (ref.)  & 1.18 & 0.45 \\
+ORB & CLAHE$\rightarrow$Norm & 1.98 & \textbf{0.61} \\
+ORB & Norm$\rightarrow$CLAHE & 4.20 & 0.64 \\
+\midrule
+KLT & CLAHE-off (ref.)  & 8.83 & 4.64 \\
+KLT & CLAHE$\rightarrow$Norm & 9.28 & 0.82 \\
+KLT & Norm$\rightarrow$CLAHE & 3.84 & \textbf{0.74} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+With every metric restricted to the tracking window, Table~\ref{tab:r_preproc_rovtio} tells a more nuanced story than a whole-run metric would. Within the interval in which the estimate actually tracks, the two orderings are nearly equivalent: for ORB the tracking-window RPE is $0.61$~m/m for CLAHE$\rightarrow$Norm against $0.64$~m/m for Norm$\rightarrow$CLAHE, a difference within noise, whereas for KLT the Norm$\rightarrow$CLAHE ordering is the clearer winner ($0.74$ against $0.82$~m/m). It is worth noting that the same comparison computed over the whole run would have shown a much larger---but misleading---gap for ORB: a full-run RPE of $1.26$~m/m for Norm$\rightarrow$CLAHE against $4.11$~m/m for CLAHE$\rightarrow$Norm. That apparent gap reflected the post-divergence blow-up rather than tracking quality and disappears once the metric is confined to the tracked segment, which is precisely why the tracking-window figures are used here. The ordering therefore has only a small, front-end-dependent effect on tracking fidelity. Because the two orderings perform so similarly within the tracked window, the choice is not expected to materially affect the results; Norm$\rightarrow$CLAHE is nonetheless adopted for all subsequent experiments for three reasons: it is clearly the better option for KLT on both metrics (in-window RPE $0.74$ against $0.82$~m/m and tracking-window ATE $3.84$ against $9.28$~m) while remaining essentially neutral for ORB, it keeps the preprocessing consistent across datasets, and normalising the radiometric frame to 8-bit before enhancing its contrast is the conventional order for preparing thermal imagery. The effect is thus reported as marginal rather than decisive, and the discarded ordering is retained in the record for completeness.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\linewidth]{Figures/fig_preproc_order.png}
+    \caption{Preprocessing-order effect on the image (same middle frame from each thermal dataset, CLAHE enabled). Normalising to 8-bit \emph{before} CLAHE (Norm$\rightarrow$CLAHE, right column) preserves more local detail and avoids the highlight saturation that CLAHE$\rightarrow$Norm (left column) produces in bright regions---most visible on FIReStereo, where the sky and foreground wash out under CLAHE$\rightarrow$Norm. The visible difference is larger than the downstream effect on tracking, which is marginal (Table~\ref{tab:r_preproc_rovtio}).}
+    \label{fig:r_preproc_order}
+\end{figure}
+
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_ORB_CLAHEON_NORM-CLAHE_traj_tracked.png}
+        \caption{Norm$\rightarrow$CLAHE (adopted): tracking-window trajectory, in-window RPE $0.64$~m/m.}
+        \label{fig:r_preproc_traj_nc}
+    \end{subfigure}\\[0.6em]
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_ORB_CLAHEON_CLAHE-NORM_traj_tracked.png}
+        \caption{CLAHE$\rightarrow$Norm: tracking-window trajectory, in-window RPE $0.61$~m/m.}
+        \label{fig:r_preproc_traj_cn}
+    \end{subfigure}
+    \caption{Preprocessing-order effect on tracking (ROVTIO, ORB, CLAHE on): over the tracking window the two orderings follow the reference almost identically (in-window RPE $0.64$ vs $0.61$~m/m), consistent with the marginal ordering effect found in Table~\ref{tab:r_preproc_rovtio}; the large whole-run RPE gap reported elsewhere reflects post-divergence behaviour rather than tracking quality.}
+    \label{fig:r_preproc_traj}
+\end{figure}
+
+\newpage
+
+\section{Per-Dataset Results}
+\label{sec:r_perdataset}
+
+
+\subsection{FIReStereo}
+\label{sec:r_firestereo}
+FIReStereo does not track in any of the four configurations: across ORB/KLT and CLAHE off/on the mean number of tracks used per update is effectively zero (Table~\ref{tab:r_full}), at most one or two vertical-channel observations briefly agree with the reference at the very start, and the estimate is otherwise pure IMU dead-reckoning, giving trajectory errors of thousands of metres. The cause is geometric rather than photometric: the platform is a slow aerial system ($\lesssim 1$~m/s) observing a distant outdoor scene, so the inter-frame parallax rarely exceeds the minimum bearing-angle needed to triangulate a landmark, the triangulation and Gauss--Newton refinement reject nearly every track, and almost no measurement updates reach the filter. That CLAHE and the choice of front-end make no difference confirms the failure is not a preprocessing or matching issue---the front-end does produce matches---but a lack of usable parallax. FIReStereo is therefore reported as an operating-regime limit (Section~\ref{sec:r_failure}): monocular thermal-inertial odometry is infeasible on slow, low-parallax platforms regardless of the image pipeline, and this run also exposes the cost of a single shared parameter set, since values that suit the faster platforms leave no headroom here.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/firestereo_frick1_ORB_CLAHEON_NORM-CLAHE_traj.png}
+        \caption{Estimated trajectory against reference: with almost no visual updates the estimate is effectively inertial dead-reckoning.}
+        \label{fig:r_firestereo_traj}
+    \end{subfigure}
+
+    \vspace{0.6em}
+
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/firestereo_frick1_ORB_CLAHEON_NORM-CLAHE_diag.png}
+        \caption{Diagnostics: the used-track count stays near zero throughout, evidencing triangulation starvation.}
+        \label{fig:r_firestereo_diag}
+    \end{subfigure}
+
+    \caption{FIReStereo (ORB, CLAHE on): too little parallax to triangulate, so almost no measurement updates occur and the estimate diverges as pure dead-reckoning; a regime limit rather than a preprocessing fault.}
+    \label{fig:r_firestereo}
+\end{figure}
+
+\newpage
+
+\subsection{ROVTIO}
+\label{sec:r_rovtio}
+ROVTIO gives the most accurate absolute tracking of the thermal datasets---though not the longest-tracking one, since STheReo with KLT (Section~\ref{sec:r_sthereo}) survives the whole run at a lower RPE. The indoor scene provides ample parallax and the platform starts from rest, so after a short start-up transient (roughly the first $14$--$20$~s, during which the low-excitation start leaves scale and velocity weakly observable) the estimate begins to follow the reference and reproduces the same motion pattern for a further $30$--$40$~s before diverging, typically around $t=50$--$65$~s and usually just after a manoeuvre. The best configuration is ORB with CLAHE off, reaching a $1.18$~m tracking-window ATE and a $0.45$~m/m in-window RPE (the lowest in-window RPE among the thermal datasets); the adopted Norm$\rightarrow$CLAHE runs are close behind (ORB $4.20$~m / $0.64$~m/m, KLT $3.84$~m / $0.74$~m/m), while KLT with CLAHE off nearly fails ($8.83$~m, in-window RPE $4.64$, divergence by $t=20$~s). This run never establishes a clean tracking phase, so its ``tracking window'' is really just the start-up transient and the approach to divergence; that is why, uniquely, its in-window RPE ($4.64$~m/m) slightly exceeds its full-run value ($4.22$~m/m), the windowed metric being meaningful only where genuine tracking occurs, as it does for every other run. A recurring feature is that the estimate keeps the correct \emph{shape} of the trajectory while sitting at a large, roughly constant offset from the reference---the monocular scale is only weakly recovered on this indoor motion, so the absolute ATE is dominated by scale error even while the platform is genuinely being tracked. This is exactly the case that the absolute ATE penalises but the alignment-invariant RPE does not, which is why RPE (and the tracking-window ATE) are used to rank the runs; the full-trajectory ATE values of hundreds of metres reflect the post-divergence blow-up and the scale offset, not a total loss of tracking within the marked window.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_ORB_CLAHEOFF_CLAHE-NORM_traj.png}
+        \caption{Full run: tracks until $t\approx55$~s then diverges, so the view is dominated by the blow-up.}
+        \label{fig:r_rovtio_traj}
+    \end{subfigure}\\[0.6em]
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_ORB_CLAHEOFF_CLAHE-NORM_traj_tracked.png}
+        \caption{Tracking window ([20,\,55]~s): follows the reference at a $1.18$~m ATE, correct shape at a scale offset.}
+        \label{fig:r_rovtio_tracked}
+    \end{subfigure}
+    
+\end{figure}
+
+\begin{figure}[htbp]\ContinuedFloat
+    \centering
+    \setcounter{subfigure}{2}   % (c) olarak devam
+    \begin{subfigure}{0.9\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/rovtio_alt1_ORB_CLAHEOFF_CLAHE-NORM_diag.png}
+        \caption{Diagnostics: absolute position error and track counts over time.}
+        \label{fig:r_rovtio_diag}
+    \end{subfigure}
+    \caption{ROVTIO (ORB, CLAHE off): best in-window tracking of the thermal datasets; the accurate interval (b) is hidden in the full-run view (a) by the later divergence. Diagnostics in Figure~\ref{fig:r_rovtio_diag}.}
+    \label{fig:r_rovtio}
+\end{figure}
+
+
+\newpage
+
+
+\subsection{STheReo}
+\label{sec:r_sthereo}
+STheReo is a car-mounted outdoor sequence whose difficulty is geometric rather than thermal: the forward-viewed scene is dominated by distant structure (a far tree-line and buildings) over a largely textureless near road, so usable parallax is scarce even though the vehicle moves quickly. The angular rates are in fact modest---peak $\approx 28$~deg/s and $95$th-percentile $\approx 17$~deg/s---so the challenge is low parallax and the weak scale it produces, not fast rotation. Here the front-end choice is decisive: KLT with CLAHE on follows the trajectory for the entire run at the lowest RPE among the thermal datasets ($0.77$~m/m, tracking-window ATE effectively the full-run ATE of $96$~m), keeping the motion shape from start to finish and never breaking on a turn; KLT with CLAHE off is similarly robust, surviving to $t=270$~s at a somewhat higher whole-run RPE ($1.11$~m/m), consistent with CLAHE mitigating the brightness-constancy violation of Section~\ref{sec:r_failure} rather than being essential to survival. ORB, by contrast, is markedly more fragile---it loses tracking around the run's sharpest turn and diverges by $t\approx 95$~s ($38$~m in-window ATE and an in-window RPE of $1.34$~m/m, which its post-divergence tail inflates to $8.91$~m/m over the whole run). The CLAHE-off ORB run shows the same post-turn fragility, though it survives somewhat longer (to $t\approx120$~s) at a lower whole-run RPE ($3.61$~m/m); both ORB configurations remain far short of KLT, consistent with ORB being the weaker front-end on this low-parallax sequence. As with ROVTIO the error is scale-dominated (a persistent, growing offset from the reference while the direction of travel still agrees), and the vertical channel is briefly lost between $t\approx 50$--$100$~s before recovering. The failure mechanism on the ORB runs is instructive: the used-track count stays a small fraction of the active tracks throughout (used/in $\approx 0.20$ against $0.58$ for KLT) and almost every candidate is rejected by the Gauss--Newton triangulation stage. This is not an over-aggressive filter but the correct response to a low-parallax geometry---the distant, forward-viewed scene yields good two-dimensional matches yet too little parallax to triangulate depth, so the landmark solves to behind the camera or to a negative inverse depth and is dropped; admitting those depthless points would inject garbage and diverge the filter faster. The scale-dominated error accumulates as a growing offset while the trajectory shape is still followed, and around the run's sharpest turn the combination tips the estimate into a divergence from which it does not recover (Figure~\ref{fig:r_sthereo_break}). STheReo therefore marks the low-parallax, high-speed operating-regime limit for the fragile ORB front-end, survivable with the more robust KLT front-end (Section~\ref{sec:r_failure}).
+
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_KLT_CLAHEON_NORM-CLAHE_traj.png}
+        \caption{Estimated trajectory against ground truth: position components over time and top-down XY.}
+        \label{fig:r_sthereo_traj}
+    \end{subfigure}
+
+    \vspace{0.6em}
+
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_KLT_CLAHEON_NORM-CLAHE_diag.png}
+        \caption{Diagnostics: absolute position error and front-end track counts over time.}
+        \label{fig:r_sthereo_diag}
+    \end{subfigure}
+
+    \caption{STheReo (KLT, CLAHE on): the estimate tracks the entire run at the lowest RPE among the thermal datasets ($0.77$~m/m), following the correct trajectory shape despite a large scale offset.}
+    \label{fig:r_sthereo}
+\end{figure}
+
+\newpage
+
+\section{Cross-Dataset Analysis}
+\label{sec:r_cross}
+Results are reported in two tables. Table~\ref{tab:r_full} gives the full-run metrics over the entire recorded sequence, and Table~\ref{tab:r_track} gives the metrics over only the manually delimited tracking window (from the settling instant, once the start-up transient has passed, to the divergence instant). Both use the adopted Norm$\rightarrow$CLAHE preprocessing, with CLAHE off and on per front-end; for CLAHE off the ordering is inapplicable, so a single run is listed. ATE is the $4$-DOF-aligned absolute error and RPE the alignment-invariant per-metre relative error (\texttt{evo}). Because monocular scale is only weakly observed, the absolute ATE is scale-dominated on the thermal sets---the estimate keeps the correct trajectory shape while sitting at a large offset---so the RPE, and especially the in-window RPE of Table~\ref{tab:r_track}, is the fairer indicator of tracking fidelity. Ground truth is external motion-capture for EuRoC and ROVTIO, and pseudo-ground-truth (LiDAR-inertial / local pose) for FIReStereo and STheReo.
+
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Full-run metrics (whole sequence, Norm$\rightarrow$CLAHE). ATE (4-DOF) in metres; RPE in m/m; $t_\text{s}$ = survival time to divergence in seconds ($^{*}$ = no divergence, tracked to the end); NIS/df is the time-averaged normalised innovation ($\approx 1$ ideal); used/in is the fraction of tracks passing the update gate. EuRoC is the visible-light baseline.}
+\label{tab:r_full}
+\begin{tabular}{lll rr r rr}
+\toprule
+Dataset & FE & CLAHE & ATE & RPE & $t_\text{s}$[s] & NIS/df & used/in \\
+\midrule
+\multirow{4}{*}{ROVTIO}     & ORB & off & 163  & 1.25 & 55    & 0.33 & 0.41 \\
+                            & ORB & on  & 256  & 1.26 & 55    & 0.34 & 0.45 \\
+                            & KLT & off & 3169 & 4.22 & 20    & 0.72 & 0.15 \\
+                            & KLT & on  & 363  & 1.33 & 50    & 0.71 & 0.29 \\
+\midrule
+\multirow{4}{*}{STheReo}    & ORB & off & 889  & 3.61 & 120   & 0.31 & 0.46 \\
+                            & ORB & on  & 3500 & 8.91 & 95    & 0.26 & 0.20 \\
+                            & KLT & off & 165  & 1.11 & 270   & 0.31 & 0.63 \\
+                            & KLT & on  & 96   & \textbf{0.77} & 352$^{*}$ & 0.33 & 0.58 \\
+\midrule
+\multirow{2}{*}{FIReStereo} & ORB & on/off & \multicolumn{5}{c}{\emph{failed to track} (used/in $\approx 0$, no measurement updates)} \\
+                            & KLT & on/off & \multicolumn{5}{c}{\emph{failed to track} (used/in $\approx 0$, ATE $>6000$~m)} \\
+\midrule
+\multirow{2}{*}{EuRoC}      & ORB & off & 0.4  & 0.12 & 133$^{*}$ & 0.06 & 0.90 \\
+                            & KLT & off & 1.1  & 0.18 & 133$^{*}$ & 0.12 & 0.97 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Tracking-window metrics, over the manual interval [settle, divergence] only. ATE$_\text{track}$ in metres; RPE$_\text{track}$ in m/m (\texttt{evo}, computed on the window). FIReStereo has no tracking window (it never tracks).}
+\label{tab:r_track}
+\begin{tabular}{lll c rr}
+\toprule
+Dataset & FE & CLAHE & window [s] & ATE$_\text{track}$ & RPE$_\text{track}$ \\
+\midrule
+\multirow{4}{*}{ROVTIO}  & ORB & off & [20,\,55]  & \textbf{1.18} & \textbf{0.45} \\
+                         & ORB & on  & [16,\,55]  & 4.20 & 0.64 \\
+                         & KLT & off & [0,\,20]   & 8.83 & 4.64 \\
+                         & KLT & on  & [20,\,50]  & 3.84 & 0.74 \\
+\midrule
+\multirow{4}{*}{STheReo} & ORB & off & [0,\,120]  & 110.9 & 2.74 \\
+                         & ORB & on  & [0,\,95]   & 38.4  & 1.34 \\
+                         & KLT & off & [0,\,270]  & 84.5  & 0.77 \\
+                         & KLT & on  & [0,\,352]  & 96.4  & 0.77 \\
+\midrule
+\multirow{2}{*}{EuRoC}   & ORB & off & [0,\,133]  & 0.38 & 0.12 \\
+                         & KLT & off & [20,\,133] & 0.46 & 0.09 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The visible-light baseline confirms estimator correctness: once the start-up transient is excluded, EuRoC tracks the reference to a sub-metre ATE ($0.38$~m for ORB) and the lowest RPE of any run ($0.12$~m/m), and follows it for the whole run, so any thermal degradation is attributable to the modality rather than an implementation fault (RQ1). That the visible-light baseline attains both the lowest ATE and the lowest RPE is a useful internal check: the RPE ranks the runs sensibly, which supports its use as the primary tracking-fidelity criterion. Two contrasting thermal successes emerge. STheReo with KLT is the most robust: it is the only thermal run that survives the entire sequence, at the lowest full-run RPE among the thermal datasets ($0.77$~m/m), despite a large scale offset that inflates its absolute ATE. ROVTIO with ORB is the most accurate \emph{within its window}: while it tracks (a $35$~s interval) it attains the lowest in-window RPE among the thermal datasets ($0.45$~m/m) and a $1.2$~m ATE, but it then diverges near $t=55$~s, which raises its full-run RPE to $1.25$~m/m. Neither is unambiguously best---STheReo-KLT wins on robustness and full-run fidelity, ROVTIO-ORB on peak in-window accuracy---and the distinction is itself a finding: the absolute ATE is a poor cross-dataset ranking criterion here because it is dominated by scale, whereas the in-window RPE isolates true tracking quality. FIReStereo fails outright in every configuration: the slow aerial platform generates too little parallax to trigger triangulation, so almost no measurement updates occur---a regime limit, not a preprocessing fault (Section~\ref{sec:r_failure}). Performance thus follows the operating regime: adequate parallax with moderate dynamics (ROVTIO) tracks accurately but briefly, marginal parallax from a distant forward-viewed scene at speed (STheReo) is survivable only with the more robust KLT front-end, and near-zero parallax from slow motion (FIReStereo) is infeasible monocularly (RQ2).
+
+
+\section{Failure-Mode Analysis}
+\label{sec:r_failure}
+Three failure modes recur across the datasets, each supported by a specific piece of evidence rather than asserted. The first is \emph{low-parallax triangulation starvation}, seen in its pure form on FIReStereo: the slow aerial platform never generates enough inter-frame bearing change to triangulate a landmark, so the parallax and Gauss--Newton stages reject almost every track and the used/in ratio stays near zero (Table~\ref{tab:r_full}); the front-end still produces matches, so this is a geometric limit of monocular observation, not a matching failure.
+
+The second is \emph{front-end-dependent triangulation starvation under low parallax}, seen on the STheReo ORB runs. The forward-viewed outdoor scene is dominated by distant structure over a largely textureless near road, so usable parallax is scarce; the more robust KLT front-end extracts enough to track the entire run, but ORB does not---its used-track count stays a small fraction of the active tracks throughout (Table~\ref{tab:r_full}, used/in $0.20$ against $0.58$ for KLT), because the depthless correspondences solve to a non-positive inverse depth or place the point behind the camera and the Gauss--Newton stage correctly discards them. The angular rates are modest (peak $\approx 28$~deg/s), so this is a low-parallax rather than a fast-rotation degeneracy. The scale-dominated error therefore accumulates as a growing offset while the trajectory shape is still followed, until around the run's sharpest turn (near $t=95$~s) the combination tips the estimate into a divergence from which it does not recover (Figure~\ref{fig:r_sthereo_break}); admitting the depthless tracks instead would inject inconsistent measurements and diverge the filter faster, so the rejection is protective, not the cause.
+
+The third is \emph{brightness-constancy violation from per-frame normalisation}, most visible on ROVTIO. The percentile normalisation is recomputed per frame, so abrupt scene-radiance changes (and the thermal core's own automatic gain/uniformity correction) shift the mapped intensity of the same physical content substantially over a short time. Figure~\ref{fig:r_brightness} quantifies this for a ROVTIO segment around $t=67$~s, where the mapped intensity of the full frame drops by some $40$ of $255$ levels---and a fixed central patch swings by about $70$---within roughly a second. This breaks the brightness-constancy assumption on which direct KLT tracking depends, degrading the visual channel and contributing to the drift that precedes divergence; it is the reason the descriptor-based ORB front-end is competitive with, and on ROVTIO better than, KLT despite KLT's usual advantage on smooth motion.
+
+Underlying all three is \emph{weak scale observability}: metric scale is recovered only through acceleration excitation, so on the low-excitation starts and near-constant-velocity segments the scale is poorly constrained, which is why every thermal run keeps the correct trajectory shape while sitting at a large, growing offset from the reference (the scale-dominated ATE of Section~\ref{sec:r_cross}). These mechanisms are not mutually exclusive: FIReStereo is starved from the outset, STheReo survives until a manoeuvre collapses triangulation, and ROVTIO tracks briefly before the combination of brightness violation and weak scale drives it apart.
+\vspace{10mm}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\linewidth]{Figures/fig_brightness_plot.png}
+  \caption{Brightness-constancy violation on ROVTIO (Norm$\rightarrow$CLAHE). Mean mapped 8-bit intensity of the full frame (black) and of a fixed central image patch (blue) over time: around $t\approx67$~s the full-frame intensity drops by $\sim40$ levels and the central patch swings by $\sim70$ (from $138$ to $67$) within about a second, so nominally static content is presented to the front-end at very different intensities. This violates the brightness-constancy assumption on which direct KLT tracking depends. The full-frame curve, a global statistic, is the cleaner indicator; the central-patch curve is more dramatic but partly confounded by camera motion over the window.}
+  \label{fig:r_brightness}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_ORB_CLAHEON_NORM-CLAHE_traj_tracked.png}
+        \caption{Tracking window up to divergence, with the whole-run GT route (grey) for context: the estimate follows the true route at a growing scale offset, then breaks off (red star) around $t\approx95$~s while GT continues (black square marks GT at that instant).}
+        \label{fig:r_sthereo_break_traj}
+    \end{subfigure}
+
+    \vspace{0.6em}
+
+    \begin{subfigure}{0.95\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/sthereo_valley_ORB_CLAHEON_NORM-CLAHE_diag.png}
+        \caption{Diagnostics: the absolute error is bounded while tracking, then grows without limit past $t\approx95$~s; the used-track count stays near zero throughout (used/in $\approx0.20$), so the front-end is chronically starved.}
+        \label{fig:r_sthereo_break_diag}
+    \end{subfigure}
+
+    \caption{STheReo ORB (CLAHE on) divergence: with scarce parallax the ORB front-end is chronically starved (b), so the scale-dominated error accumulates until, around the run's sharpest turn, the estimate breaks off the true route near $t\approx95$~s and does not recover (a). The more robust KLT front-end survives the same sequence (Figure~\ref{fig:r_sthereo}).}
+    \label{fig:r_sthereo_break}
+\end{figure}
+
+\newpage
+
+\section{Sensitivity to Calibration}
+\label{sec:r_calib}
+Intrinsics, camera--IMU extrinsics and the time offset are taken as provided by each dataset and held fixed (Section~\ref{sec:scopeanddelimitations}); the only sensor-model quantities varied are the IMU noise parameters, whose provenance differs by dataset (RQ3). EuRoC provides characterised values for its ADIS16448, whereas the thermal sets supply only datasheet figures for the Epson G365, VectorNav VN-100 and Xsens MTi-300; following the argument that the dataset-provided parametrisation is what should be evaluated, these are used directly, without the safety-margin inflation that a practitioner might otherwise apply, so that any inadequacy is exposed rather than masked. To separate the contribution of the inertial channel from that of the vision front-end, each platform is additionally run in a pure inertial dead-reckoning mode (no visual updates); Figure~\ref{fig:r_imuonly} overlays the resulting drift against time. This test characterises the \emph{raw} inertial quality (bias and noise integrated open-loop) and is distinct from the noise-model adequacy probed by the consistency indicators of Section~\ref{sec:r_consistency}: the former asks how fast the IMU drifts on its own, the latter whether the covariance the filter assigns to that IMU is correct. The inertial-only drift separates the platforms into two groups (Figure~\ref{fig:r_imuonly}). On ROVTIO and STheReo the open-loop drift is comparable to the characterised-IMU EuRoC baseline---under $25$~m by $t=30$~s---so for those sequences the divergences are not primarily inertial: the dominant error source is geometric (weak scale observability and low parallax), and the filter is not grossly over-confident (Section~\ref{sec:r_consistency}). FIReStereo is the exception: its as-provided datasheet inertial model dead-reckons roughly an order of magnitude faster (about $200$~m by $t=30$~s against tens of metres for the others), so there a poor IMU parametrisation compounds the low-parallax vision starvation---exactly the datasheet inadequacy that the un-inflated, as-provided treatment was intended to expose. The overall picture is therefore that geometry dominates where the inertial channel is adequate (ROVTIO, STheReo), whereas on the slow aerial platform the vision and inertial channels fail together (RQ3).
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\linewidth]{Figures/fig_imuonly.png}
+  \caption{Inertial-only dead-reckoning drift for each platform (no visual updates), each aligned to GT with the $4$-DOF (position and yaw) transform over the first $5$~s and plotted on a logarithmic axis. ROVTIO, STheReo and the characterised-IMU EuRoC baseline drift comparably (tens of metres by $t=30$~s), whereas FIReStereo's as-provided datasheet model drifts roughly an order of magnitude faster ($\approx200$~m by $t=30$~s); on that platform the inertial channel fails alongside the vision front-end, while on the others the geometry, not the IMU, dominates.}
+  \label{fig:r_imuonly}
+\end{figure}
+
+\section{Filter Consistency}
+\label{sec:r_consistency}
+Filter consistency is monitored through the time-averaged normalised innovation squared per degree of freedom (NIS/df, ideally $\approx 1$) and the used/in ratio of tracks passing the update gate (Table~\ref{tab:r_full}). Across all runs the reported NIS/df lies below one ($0.06$--$0.72$), which taken at face value indicates a \emph{conservative} filter---innovations smaller than the assigned covariance predicts---rather than the over-confidence that a too-optimistic (un-inflated) IMU noise model might have been expected to produce. Two caveats temper this reading. First, the statistic is accumulated only over tracks that pass the chi-square gate, so it is truncated and biased downward; the true NIS/df is higher than reported and these values are best read as a lower bound, not as evidence of strong over-confidence. Second, the used/in ratio is low on the thermal sets ($0.15$--$0.63$ versus $0.90$--$0.97$ on EuRoC), so the covariance is corrected by vision comparatively rarely and stays large, which is itself consistent with a below-one innovation ratio. The practical conclusion is that the divergences are not primarily a covariance mis-scaling problem: the filter is, if anything, under-confident, and the failures trace to the geometric mechanisms of Section~\ref{sec:r_failure} (starved or degenerate triangulation and weak scale) rather than to an over-trusted state. A rigorous consistency assessment (NIS against its chi-square bounds over Monte-Carlo repetitions, or NEES against ground truth)~\cite{BarShalom_2001} is left as future work; only the aggregate indicator is reported here.
+
+\section{Limitations}
+\label{sec:r_limitations}
+Several limitations bound the strength of the conclusions and should be read alongside the results. The most fundamental is that the study is monocular by design: metric scale is observable only through inertial excitation, so the scale-dominated error that recurs across every thermal run is partly a consequence of the chosen configuration rather than of the thermal modality alone, and a stereo baseline would remove it. The evaluation also relies on a single shared parameter set across all datasets; this is deliberate, so that differences are attributable to the data rather than to per-dataset tuning, but it means the reported thermal accuracy is a lower bound---a regime-tuned configuration would almost certainly do better, most visibly on FIReStereo, where the shared settings leave no headroom.
+
+The evaluation methodology carries its own caveats. Divergence and settling instants are marked by hand from the trajectory plots rather than detected automatically; this was a considered choice, because the transient--track--divergence pattern and the large start-up excursions defeat any fixed automatic threshold, but it introduces a degree of observer subjectivity and limits exact reproducibility. Each configuration is evaluated on a single sequence per dataset and from a single run, so run-to-run variability from the stochastic RANSAC stage is not quantified; the absolute figures should be read as representative rather than as statistically averaged. Ground truth is external motion-capture only for EuRoC and ROVTIO---for FIReStereo and STheReo it is a LiDAR-inertial or local-pose estimate with its own drift, so those errors are reported against a reference rather than against absolute truth. The filter-consistency indicator, likewise, is an aggregate NIS/df accumulated over gate-passing tracks and is therefore a truncated lower bound; a full consistency assessment (NIS against its chi-square bounds, or NEES against ground truth over repeated runs) is out of scope. Finally, the EuRoC baseline changes modality and IMU quality simultaneously and so validates estimator correctness without isolating the thermal contribution, the IMU noise parameters are taken from datasheets rather than Allan-variance characterisation, one candidate dataset (AerialTN) was excluded owing to an unresolved axis convention and a pre-compressed stream, and the pipeline is run offline with no compensation for motion blur or for the rolling-shutter readout of some commercial thermal cores. None of these overturns the central finding, but each narrows the conditions under which it should be generalised.

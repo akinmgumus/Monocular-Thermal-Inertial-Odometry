@@ -1,0 +1,52 @@
+\chapter{Problem Formulation}
+\label{ch:problem_formulation}
+
+\section{Problem Statement}
+\label{sec:problem}
+
+As established in Chapter~\ref{ch:related_work}, thermal-inertial odometry (TIO) has so far been addressed mainly through direct, photometric formulations~\cite{Khattak_2019} and learning-based estimators~\cite{Saputra_2020}, often on a stereo baseline or a single, carefully tuned platform. The classical, feature-based filtering combination, the Multi-State Constraint Kalman Filter (MSCKF)~\cite{Mourikis_2007}, is well established on visible-spectrum data but has not been systematically characterised on thermal imagery. It therefore remains unclear how strongly the performance of such a system depends on the operating regime (platform velocity and excitation, scene depth and parallax, thermal contrast) and on practical implementation factors (the normalisation of raw high-bit-depth thermal frames and the parametrisation of the IMU noise model).
+
+This thesis addresses that gap by implementing a monocular MSCKF-based TIO pipeline and evaluating it under a common, reproducible protocol across four datasets (ROVTIO, FIReStereo, STheReo, and EuRoC) that span visible and thermal modalities, indoor and outdoor scenes, and aerial and ground platforms. A fifth dataset, AerialTN, is partially integrated but excluded from the core evaluation---owing to an unresolved IMU axis-convention issue and to its thermal stream being delivered as pre-compressed $8$-bit video, which precludes the common preprocessing---and its full evaluation is left to future work. The visible-light dataset (EuRoC) is included as a modality-independent sanity check that establishes the baseline correctness of the estimator, thereby isolating the effects specific to the thermal modality.
+
+\section{Research Questions}
+\label{sec:research-questions}
+The study is guided by a single overarching question:
+\begin{quote}
+\itshape Under what operating conditions can a classical, feature-based monocular MSCKF deliver reliable metric state estimation from thermal imagery and a low-cost IMU, and what factors limit its performance?
+\end{quote}
+\noindent This question is decomposed into three sub-questions that structure the evaluation and the conclusions:
+%
+\begin{enumerate}
+  \item[\textbf{RQ1}] \textbf{(Feasibility and baseline.)} Can the same MSCKF estimator that is validated on visible-light visual-inertial data produce metric odometry from raw thermal imagery and a low-cost IMU, and how large is the accuracy gap between the two modalities?
+  \item[\textbf{RQ2}] \textbf{(Operating regime.)} How does tracking reliability depend on platform motion (velocity and acceleration excitation) and scene structure (depth and parallax, thermal contrast), and which regimes cause the estimator to diverge?
+  \item[\textbf{RQ3}] \textbf{(Preprocessing and IMU noise parametrisation.)} How sensitive is estimation accuracy to (a) the thermal preprocessing chain (undistortion, denoising, contrast enhancement, and 8-bit normalisation) that prepares 14/16-bit raw frames for the feature front-end, including the ordering of its operators, and (b) the quality of the IMU noise parametrisation provided with each dataset? What failure modes dominate when these are imperfect?
+\end{enumerate}
+%
+\noindent For RQ3(b), the IMU noise model comprises the accelerometer and gyroscope noise densities and their random-walk (bias instability) terms. Reliable values are normally obtained by characterising the specific sensor, for example through Allan variance analysis. In the datasets used here, some provide such characterised parameters while others supply only datasheet values; this thesis does not re-estimate them, but evaluates the pipeline across both cases. The aim is to assess to what extent an inadequate IMU noise parametrisation acts as a source of trajectory drift that is independent of the thermal front-end, an effect whose severity is found to vary across datasets.
+
+\section{Contributions}
+\label{sec:contributions}
+
+The contribution of this thesis is not a new estimation algorithm but a systematic and rigorous characterisation of monocular thermal-inertial odometry, supported by a reproducible evaluation framework. Specifically:
+%
+\begin{enumerate}
+  \item \textbf{A modular monocular MSCKF thermal-inertial pipeline} that cleanly decouples three layers (image preprocessing, the feature-tracking front-end with Kanade--Lucas--Tomasi (KLT) optical flow and ORB descriptors, and the MSCKF back-end), so that each can be analysed and tuned independently for the thermal modality.
+  \item \textbf{A consistent multi-dataset evaluation protocol.} The same estimator is run on four datasets with a uniform metric suite (Absolute Trajectory Error and Relative Pose Error after $4$-DOF (position and yaw) alignment, drift rate, and filter-consistency indicators). A visible-light dataset (EuRoC~\cite{Burri_2016}) serves as a modality-independent correctness baseline.
+  \item \textbf{A justified evaluation methodology for monocular visual-inertial estimation.} Because metric scale, roll, and pitch are observable in visual-\emph{inertial} estimation while global position and yaw are not, this thesis argues for and uses $4$-DOF trajectory alignment (over position and yaw) rather than scale-correcting $\mathrm{Sim}(3)$ alignment, which would mask the scale error the estimator is intended to recover, or full $\mathrm{SE}(3)$ alignment, which would absorb genuine roll and pitch drift.
+  \item \textbf{A sensitivity and failure-mode analysis.} The study empirically relates tracking performance to platform velocity, scene depth and parallax, thermal contrast, and the quality of the IMU noise parametrisation supplied with each dataset. Furthermore, it identifies recurring failure modes including brightness-constancy violation induced by per-frame normalisation, weak scale observability under low-acceleration excitation, and triangulation starvation under low parallax.
+  \item \textbf{A practical conclusion for deployment.} The evidence indicates that monocular TIO is viable only within favourable operating regimes and is not, on its own, a reliable metric odometry source under unconstrained conditions, which motivates sensor fusion or a stereo thermal baseline for real-world use.
+\end{enumerate}
+
+\section{Scope and Delimitations}
+\label{sec:scopeanddelimitations}
+
+To keep the study focused, the following boundaries are set:
+%
+\begin{itemize}
+  \item \textbf{Monocular only.} Although several datasets provide a stereo thermal pair, only a single (left) camera is used, so that the metric-scale behaviour of the inertial channel can be studied in isolation. Stereo is discussed only as future work.
+  \item \textbf{Filter-based estimation.} The back-end is fixed to the MSCKF; optimisation-based estimators are reviewed (Chapter~\ref{ch:related_work}) but not re-implemented.
+  \item \textbf{Fixed geometric calibration.} Camera intrinsics, camera--IMU extrinsics, and time offset are taken as provided by each dataset and treated as fixed; estimating or perturbing them is out of scope. The only sensor-model quantities considered are the IMU noise parameters, whose adequacy varies between the datasets used.
+  \item \textbf{Existing recordings.} Evaluation uses already-recorded public datasets and a collaborator-provided drone recording rather than a self-conducted flight campaign.
+  \item \textbf{Offline evaluation.} The pipeline is run offline on recorded data; real-time and on-board deployment are out of scope.
+  \item \textbf{Consistency evaluation.} Filter consistency is monitored through the $\chi^2$ acceptance rate and the time-averaged NIS; NEES-based tests and formal NIS-band or Monte-Carlo consistency analyses are out of scope~\cite{BarShalom_2001}, as they require ground-truth state covariance or repeated runs.
+\end{itemize}

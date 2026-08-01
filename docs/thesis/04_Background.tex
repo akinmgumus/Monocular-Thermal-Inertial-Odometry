@@ -1,0 +1,190 @@
+\chapter{Background}
+\label{ch:background}
+
+This chapter establishes the theoretical background required to follow the implementation in Chapter~\ref{ch:method}. It first fixes the notation and coordinate frames (Section~\ref{sec:bg_frames}), then develops the inertial motion model, the Multi-State Constraint Kalman Filter together with its observability properties, the visual front-end, thermal image formation and preprocessing, and finally the trajectory-evaluation metrics. The treatment is restricted to established results; the specific design choices and parameter values of the implemented system are deferred to Chapter~\ref{ch:method}.
+
+\section{Notation and Coordinate Frames}
+\label{sec:bg_frames}
+Three right-handed coordinate frames are used throughout this thesis. The \emph{world} frame $\{W\}$ is a fixed reference frame whose $z$-axis points upward, opposite to gravity. The gravity vector is written $\mathbf{g}^{W} = [\,0,\ 0,\ g\,]^{\top}$ with $g \approx 9.81~\mathrm{m/s^2}$, following the specific-force convention in which a stationary accelerometer reads $+g$ along its vertical axis: at rest the case housing pushes up on the proof mass, so the measured specific force balances gravity. For an ideal sensor with zero bias and noise, $\mathbf{R}_{I}^{W}\,\mathbf{a} = \mathbf{g}^{W}$, and the resulting coordinate acceleration $\dot{\mathbf{v}} = \mathbf{R}_{I}^{W}\,\mathbf{a} - \mathbf{g}^{W}$ vanishes. The \emph{IMU} (body) frame $\{I\}$ is rigidly attached to the inertial sensor and is the frame in which the accelerometer and gyroscope measurements are expressed. The \emph{camera} frame $\{C\}$ is centred at the optical centre with its $z$-axis along the optical axis. Since the camera is rigidly mounted to the IMU, the extrinsic transform $(\mathbf{R}_{C}^{I},\,\mathbf{p}_{C}^{I})$ is constant and is taken from calibration.
+
+Scalars are written in italics ($a$), vectors in bold lowercase ($\mathbf{a}$) and matrices in bold uppercase ($\mathbf{A}$). A trailing superscript denotes the frame in which a quantity is expressed; for instance $\mathbf{p}^{W}$ is a point expressed in $\{W\}$. A rotation matrix $\mathbf{R}_{B}^{A} \in \mathrm{SO}(3)$ maps a vector from frame $\{B\}$ to frame $\{A\}$, so that a point transforms as
+\begin{equation}
+  \mathbf{p}^{A} = \mathbf{R}_{B}^{A}\,\mathbf{p}^{B} + \mathbf{p}_{B}^{A},
+\end{equation}
+where $\mathbf{p}_{B}^{A}$ is the position of the origin of $\{B\}$ expressed in $\{A\}$. Because $\mathbf{R}_{B}^{A} \in \mathrm{SO}(3)$ is orthogonal, its inverse equals its transpose, $(\mathbf{R}_{B}^{A})^{-1} = (\mathbf{R}_{B}^{A})^{\top} = \mathbf{R}_{A}^{B}$. The skew-symmetric matrix of a vector $\boldsymbol{\omega} = [\,\omega_1,\ \omega_2,\ \omega_3\,]^{\top}$ is written $\lfloor \boldsymbol{\omega} \rfloor_{\times}$ and reproduces the cross product, $\lfloor \boldsymbol{\omega} \rfloor_{\times}\,\mathbf{v} = \boldsymbol{\omega} \times \mathbf{v}$:
+\begin{equation}
+  \lfloor \boldsymbol{\omega} \rfloor_{\times} =
+  \begin{bmatrix}
+    0 & -\omega_3 & \omega_2 \\
+    \omega_3 & 0 & -\omega_1 \\
+    -\omega_2 & \omega_1 & 0
+  \end{bmatrix}.
+\end{equation}
+
+Orientation is represented by a unit quaternion under the Hamilton convention, $\mathbf{q} = [\,q_w,\ q_x,\ q_y,\ q_z\,]^{\top}$ with $\lVert \mathbf{q} \rVert = 1$; the implementation stores it in the $[\,q_x,\ q_y,\ q_z,\ q_w\,]$ ordering used by the SciPy library. Every unit quaternion corresponds to a rotation matrix $\mathbf{R}(\mathbf{q}) \in \mathrm{SO}(3)$, and the two representations are used interchangeably. The exponential map relates a minimal rotation vector $\boldsymbol{\phi} \in \mathbb{R}^{3}$ to a rotation,
+\begin{equation}
+  \mathrm{Exp}(\boldsymbol{\phi}) = \exp\!\big(\lfloor \boldsymbol{\phi} \rfloor_{\times}\big) \in \mathrm{SO}(3),
+\end{equation}
+with inverse $\mathrm{Log}(\cdot)$. For a small rotation, the first-order approximation $\mathrm{Exp}(\delta\boldsymbol{\theta}) \approx \mathbf{I} + \lfloor \delta\boldsymbol{\theta} \rfloor_{\times}$ is used when linearising the propagation and measurement Jacobians in Chapter~\ref{ch:method}; the error-state formulation and the rotation conventions adopted throughout follow~\cite{Sola_2017}. Orientation is propagated by right-multiplication with a body-frame increment: for a body-frame angular velocity $\boldsymbol{\omega}$ integrated over an interval $\Delta t$,
+\begin{equation}
+  \mathbf{R}_{I,\,k+1}^{W} = \mathbf{R}_{I,\,k}^{W}\,\mathrm{Exp}(\boldsymbol{\omega}\,\Delta t).
+  \label{eq:bg_rot_update}
+\end{equation}
+
+The estimator maintains a nominal state together with a minimal error state. For a quantity $\mathbf{x}$ the estimate is denoted $\hat{\mathbf{x}}$, and the error is defined additively, $\mathbf{x} = \hat{\mathbf{x}} + \tilde{\mathbf{x}}$, for every quantity except orientation, whose error is a body-frame rotation applied multiplicatively on the right,
+\begin{equation}
+  \mathbf{R}_{I}^{W} = \hat{\mathbf{R}}_{I}^{W}\,\mathrm{Exp}(\delta\boldsymbol{\theta}),
+  \label{eq:bg_att_error}
+\end{equation}
+so that the three-parameter $\delta\boldsymbol{\theta}$ captures the attitude error without the redundancy of the four-parameter quaternion. The inertial error state stacks fifteen degrees of freedom,
+\begin{equation}
+  \tilde{\mathbf{x}}_{I} =
+  \big[\, \delta\boldsymbol{\theta}^{\top},\ \delta\mathbf{b}_{g}^{\top},\ \delta\mathbf{v}^{\top},\ \delta\mathbf{b}_{a}^{\top},\ \delta\mathbf{p}^{\top} \,\big]^{\top} \in \mathbb{R}^{15},
+  \label{eq:bg_error_state}
+\end{equation}
+comprising the attitude error $\delta\boldsymbol{\theta}$ and gyroscope-bias error $\delta\mathbf{b}_{g}$ (expressed in $\{I\}$), the velocity error $\delta\mathbf{v}$ and position error $\delta\mathbf{p}$ (expressed in $\{W\}$), and the accelerometer-bias error $\delta\mathbf{b}_{a}$ (expressed in $\{I\}$). This fixed ordering is used in the propagation and measurement Jacobians of Chapter~\ref{ch:method}.
+
+\section{Inertial Measurement Model}
+\label{sec:bg_imu}
+Between visual updates the MSCKF propagates its state by integrating the inertial measurements. This section states the IMU measurement model, the resulting state kinematics, and the linearised error-state propagation that carries the covariance forward; the implementation specifics (integration scheme and numerical noise values) are deferred to Chapter~\ref{ch:method}. The formulation follows the error-state convention of~\cite{Sola_2017}.
+
+\subsection{Sensor Measurement Model}
+\label{sec:bg_imu_meas}
+A low-cost inertial measurement unit provides the body angular rate from its gyroscope and the specific force from its accelerometer, each corrupted by a slowly varying bias and additive white noise:
+\begin{align}
+  \boldsymbol{\omega}_m &= \boldsymbol{\omega} + \mathbf{b}_g + \mathbf{n}_g, \\
+  \mathbf{a}_m &= \mathbf{a} + \mathbf{b}_a + \mathbf{n}_a,
+\end{align}
+where $\boldsymbol{\omega}$ is the true angular rate and $\mathbf{a}$ the true specific force, both expressed in $\{I\}$. The accelerometer senses specific force rather than coordinate acceleration and therefore cannot separate gravitational from inertial effects; at rest $\mathbf{a} = (\mathbf{R}_I^{W})^{\top}\mathbf{g}^{W}$, which recovers the static condition of Section~\ref{sec:bg_frames}. The biases $\mathbf{b}_g$ and $\mathbf{b}_a$ are modelled as random walks driven by $\mathbf{n}_{bg}$ and $\mathbf{n}_{ba}$, while $\mathbf{n}_g$ and $\mathbf{n}_a$ are white noise. These four stochastic terms are characterised by the IMU noise parameters: the gyroscope and accelerometer noise densities $\sigma_g, \sigma_a$ and the bias random-walk coefficients $\sigma_{bg}, \sigma_{ba}$. Their values are taken from each dataset (Chapter~\ref{ch:datasets}), and the sensitivity of the estimate to their adequacy is one focus of this study.
+
+\subsection{State Kinematics and Propagation}
+\label{sec:bg_imu_kin}
+The equations below describe the evolution of the true state, in which the bias-corrected measurements $\boldsymbol{\omega} = \boldsymbol{\omega}_m - \mathbf{b}_g$ and $\mathbf{a} = \mathbf{a}_m - \mathbf{b}_a$ use the true biases (the zero-mean white noise is omitted from the deterministic update and enters only through the process noise). They drive the continuous-time kinematics of the inertial state:
+\begin{align}
+  \dot{\mathbf{R}}_I^W &= \mathbf{R}_I^W \lfloor\boldsymbol{\omega}\rfloor_\times, \\
+  \dot{\mathbf{v}} &= \mathbf{R}_I^W \mathbf{a} - \mathbf{g}^{W}, \\
+  \dot{\mathbf{p}} &= \mathbf{v}, \\
+  \dot{\mathbf{b}}_g &= \mathbf{n}_{bg}, \qquad \dot{\mathbf{b}}_a = \mathbf{n}_{ba},
+\end{align}
+with $\mathbf{g}^{W} = [\,0, 0, g\,]^\top$ as fixed in Section~\ref{sec:bg_frames}. The orientation evolves on $\mathrm{SO}(3)$ through the body angular rate (Eq.~\ref{eq:bg_rot_update}); the velocity through the specific force rotated into $\{W\}$ minus gravity; and the position through the velocity. Integrating over the inter-measurement interval $\Delta t$ with a first-order (Euler) scheme gives the discrete propagation that constitutes the filter's prediction step:
+\begin{align}
+  \mathbf{R}_{k+1} &= \mathbf{R}_k\,\mathrm{Exp}(\boldsymbol{\omega}\,\Delta t), \\
+  \mathbf{v}_{k+1} &= \mathbf{v}_k + (\mathbf{R}_k\mathbf{a} - \mathbf{g}^{W})\,\Delta t, \\
+  \mathbf{p}_{k+1} &= \mathbf{p}_k + \mathbf{v}_k\,\Delta t + \tfrac{1}{2}(\mathbf{R}_k\mathbf{a} - \mathbf{g}^{W})\,\Delta t^2,
+\end{align}
+where $\mathbf{R}_k$ abbreviates $\mathbf{R}_{I,k}^W$. The exact integration scheme is specified in Chapter~\ref{ch:method}. In practice the true biases are unknown, so the filter evaluates these equations with the current bias estimates $\hat{\mathbf{b}}_g$ and $\hat{\mathbf{b}}_a$ in place of $\mathbf{b}_g$ and $\mathbf{b}_a$; the discrepancy between the true and estimated biases is exactly what the error state of Section~\ref{sec:bg_imu_error} propagates.
+
+\subsection{Error-State Propagation}
+\label{sec:bg_imu_error}
+The filter does not track the uncertainty of the full nominal state directly, but the covariance $\mathbf{P}$ of the minimal error state $\tilde{\mathbf{x}}_I$ of Eq.~\ref{eq:bg_error_state}. This covariance quantifies the filter's confidence in its estimate and grows during propagation as integrated IMU noise accumulates. Linearising the kinematics about the current estimate with the small-angle approximation $\mathrm{Exp}(\delta\boldsymbol{\theta}) \approx \mathbf{I} + \lfloor\delta\boldsymbol{\theta}\rfloor_\times$ yields the continuous error dynamics:
+\begin{align}
+  \dot{\delta\boldsymbol{\theta}} &= -\lfloor\boldsymbol{\omega}\rfloor_\times\,\delta\boldsymbol{\theta} - \delta\mathbf{b}_g - \mathbf{n}_g, \\
+  \dot{\delta\mathbf{v}} &= -\mathbf{R}_I^W\lfloor\mathbf{a}\rfloor_\times\,\delta\boldsymbol{\theta} - \mathbf{R}_I^W\,\delta\mathbf{b}_a - \mathbf{R}_I^W\mathbf{n}_a, \\
+  \dot{\delta\mathbf{p}} &= \delta\mathbf{v}, \\
+  \dot{\delta\mathbf{b}}_g &= \mathbf{n}_{bg}, \qquad \dot{\delta\mathbf{b}}_a = \mathbf{n}_{ba}.
+\end{align}
+The bias errors have no deterministic dynamics; they are driven purely by their random-walk noise and therefore contribute to the state only through the process noise. The coefficients of $\delta\boldsymbol{\theta}$, $\delta\mathbf{v}$, $\delta\mathbf{p}$, $\delta\mathbf{b}_g$ and $\delta\mathbf{b}_a$ in these relations populate the $15\times15$ continuous-time transition matrix $\mathbf{F}$, while the white-noise terms $(\mathbf{n}_g, \mathbf{n}_a, \mathbf{n}_{bg}, \mathbf{n}_{ba})$ enter through a noise-input matrix $\mathbf{G}$. Together with the IMU noise parameters of Section~\ref{sec:bg_imu_meas}, these define the discrete process-noise covariance $\mathbf{Q}$, which captures how much uncertainty the integrated inertial noise injects over one interval $\Delta t$. Discretising the dynamics to first order gives the state-transition matrix $\boldsymbol{\Phi} = \mathbf{I} + \mathbf{F}\,\Delta t$, which maps the error state across one propagation step, and the covariance propagates as
+\begin{equation}
+  \mathbf{P}_{k+1} = \boldsymbol{\Phi}\,\mathbf{P}\,\boldsymbol{\Phi}^\top + \mathbf{Q}.
+\end{equation}
+The explicit construction of $\mathbf{G}$ and the discretisation of $\mathbf{Q}$ are given in Appendix~\ref{ch:appendix} (Section~\ref{sec:a_gq}). To preserve estimator consistency, the rotation-dependent blocks of $\mathbf{F}$ are evaluated at a fixed first-estimate value rather than the latest estimate, as motivated in Section~\ref{sec:bg_fej} and detailed in Chapter~\ref{ch:method}.
+
+\section{The Multi-State Constraint Kalman Filter}
+\label{sec:bg_msckf}
+
+The MSCKF~\cite{Mourikis_2007} fuses the inertial propagation of Section~\ref{sec:bg_imu} with visual measurements while keeping the computational cost bounded. Its defining idea is to augment the state with a sliding window of recent camera poses and to treat each tracked feature as a geometric constraint linking the poses from which it was observed, rather than adding the feature to the state. The landmark is triangulated and then algebraically removed, so the map never enters the filter and the cost stays linear in the number of features.
+
+\subsection{State Representation}
+\label{sec:bg_state}
+The filter state comprises the current inertial state of Section~\ref{sec:bg_imu} augmented with a sliding window of $N$ past camera poses. Each camera pose contributes an orientation $\mathbf{R}_{C_i}^{W}$ and a position $\mathbf{p}_{C_i}^{W}$, with the corresponding $6$-DOF error $[\,\delta\boldsymbol{\theta}_{C_i}^{\top},\ \delta\mathbf{p}_{C_i}^{\top}\,]^{\top}$, so the full error state and its covariance live in
+\begin{equation}
+  \tilde{\mathbf{x}} = \big[\, \tilde{\mathbf{x}}_I^{\top},\ \tilde{\mathbf{x}}_{C_1}^{\top},\ \dots,\ \tilde{\mathbf{x}}_{C_N}^{\top} \,\big]^{\top} \in \mathbb{R}^{15+6N}.
+\end{equation}
+Crucially, landmark positions are \emph{not} part of the state. In EKF-SLAM every observed feature is appended to the state vector, so its dimension---and hence the update cost---grows without bound as the map expands. By retaining a fixed-size window of poses instead, the MSCKF keeps the state dimension bounded by $N$ while still exploiting the multi-view information each feature carries. When a new image is recorded, the current camera pose---obtained from the inertial state through the fixed extrinsics $(\mathbf{R}_{C}^{I}, \mathbf{p}_{C}^{I})$---is appended to the window (state augmentation), and poses are marginalised once the window is full, keeping $N$ constant; the specific pruning strategy is described in Chapter~\ref{ch:method}.
+
+\subsection{State and Covariance Propagation}
+\label{sec:bg_propagation}
+Between images only the inertial state evolves; the camera poses already in the window are fixed in the world frame and do not change under IMU motion. Propagation therefore applies the inertial transition $\boldsymbol{\Phi}_I$ of Section~\ref{sec:bg_imu_error} to the IMU block of the covariance, leaves the camera blocks unchanged, and carries the IMU--camera cross-covariance through $\boldsymbol{\Phi}_I$:
+\begin{equation}
+  \begin{bmatrix} \mathbf{P}_{II} & \mathbf{P}_{IC} \\ \mathbf{P}_{IC}^{\top} & \mathbf{P}_{CC} \end{bmatrix}
+  \;\longrightarrow\;
+  \begin{bmatrix} \boldsymbol{\Phi}_I \mathbf{P}_{II} \boldsymbol{\Phi}_I^{\top} + \mathbf{Q}_I & \boldsymbol{\Phi}_I \mathbf{P}_{IC} \\ \mathbf{P}_{IC}^{\top} \boldsymbol{\Phi}_I^{\top} & \mathbf{P}_{CC} \end{bmatrix}.
+\end{equation}
+State augmentation forms the new camera pose as a function of the current inertial state and the extrinsics; its covariance and its cross-covariance with the existing state are obtained by propagating $\mathbf{P}$ through the augmentation Jacobian, which contains, in particular, the lever-arm coupling $-\mathbf{R}_{I}^{W}\lfloor \mathbf{p}_{C}^{I} \rfloor_{\times}$ between the new camera position and the IMU attitude error.
+
+\subsection{Visual Measurement Model and Feature Triangulation}
+\label{sec:bg_measurement}
+A feature $f$ tracked across $M \le N$ window poses yields one measurement per view. Expressing the landmark $\mathbf{p}_f^{W}$ in camera $i$ and applying the pinhole projection $\pi(\cdot)$ gives the normalised image observation
+\begin{equation}
+  \mathbf{z}_i = \pi\!\big( (\mathbf{R}_{C_i}^{W})^{\top}(\mathbf{p}_f^{W} - \mathbf{p}_{C_i}^{W}) \big) + \mathbf{n}_i,
+  \qquad \pi\big([X,\,Y,\,Z]^{\top}\big) = \tfrac{1}{Z}[X,\,Y]^{\top},
+\end{equation}
+with $\mathbf{n}_i$ the image-measurement noise, where the camera pose $(\mathbf{R}_{C_i}^{W}, \mathbf{p}_{C_i}^{W})$ is the augmented window pose obtained from the inertial state through the extrinsics. Because the landmark is not in the state, it is recovered from its own observations. Holding the current window poses fixed, $\mathbf{p}_f^{W}$ is triangulated by minimising the summed reprojection error over the $M$ views,
+\begin{equation}
+  \mathbf{p}_f^{W} = \arg\min_{\mathbf{p}} \sum_{i=1}^{M} \big\lVert \mathbf{z}_i - \pi\big((\mathbf{R}_{C_i}^{W})^{\top}(\mathbf{p} - \mathbf{p}_{C_i}^{W})\big) \big\rVert^2,
+  \label{eq:bg_triangulation}
+\end{equation}
+solved by Gauss--Newton iteration. To keep the problem well conditioned for distant points, the optimisation is carried out in an inverse-depth parameterisation, in which the depth is represented by its reciprocal so that a feature at large range maps to a small, finite quantity rather than diverging. The conditioning of Eq.~\ref{eq:bg_triangulation} depends on the parallax, that is the angular spread of the viewing rays across the $M$ poses: with wide parallax the rays intersect at a well-defined point, whereas under near-pure rotation or very distant structure the rays are almost parallel and the depth is poorly constrained. A minimum-parallax threshold therefore gates which tracks are triangulated, and the loss of parallax after a manoeuvre is one of the failure modes examined in Chapter~\ref{ch:results_and_discussion}.
+
+\subsection{Null-Space Projection and the Measurement Update}
+\label{sec:bg_update}
+Linearising the $M$ observations of feature $f$ about the current estimate and stacking them gives
+\begin{equation}
+  \mathbf{r} = \mathbf{H}_{x}\,\tilde{\mathbf{x}} + \mathbf{H}_{f}\,\delta\mathbf{p}_f^{W} + \mathbf{n},
+  \label{eq:bg_msckf_residual}
+\end{equation}
+where $\mathbf{H}_x$ and $\mathbf{H}_f \in \mathbb{R}^{2M \times 3}$ are the Jacobians with respect to the state and the landmark position. The landmark error $\delta\mathbf{p}_f^{W}$ is a nuisance term that must not enter the state. It is eliminated by projecting the residual onto the left null space of $\mathbf{H}_f$: letting the columns of $\mathbf{A} \in \mathbb{R}^{2M \times (2M-3)}$ span $\mathrm{null}(\mathbf{H}_f^{\top})$ so that $\mathbf{A}^{\top}\mathbf{H}_f = \mathbf{0}$, left-multiplication of Eq.~\ref{eq:bg_msckf_residual} by $\mathbf{A}^{\top}$ removes the landmark and reduces the $2M$ residuals to $2M-3$ constraints on the camera poses alone,
+\begin{equation}
+  \mathbf{r}_o = \mathbf{A}^{\top}\mathbf{r} = \mathbf{H}_o\,\tilde{\mathbf{x}} + \mathbf{n}_o,
+  \qquad \mathbf{H}_o = \mathbf{A}^{\top}\mathbf{H}_x.
+\end{equation}
+This is the \emph{multi-state constraint}. It is applied as a standard EKF update---with Kalman gain $\mathbf{K} = \mathbf{P}\mathbf{H}_o^{\top}(\mathbf{H}_o \mathbf{P} \mathbf{H}_o^{\top} + \mathbf{R}_o)^{-1}$, state correction $\mathbf{K}\mathbf{r}_o$, and the corresponding covariance update---after a $\chi^2$ (Mahalanobis) test gates out tracks whose residual is inconsistent with the predicted covariance. The gating test itself is a Mahalanobis check on the projected residual: with innovation covariance $\mathbf{S} = \mathbf{H}_o\mathbf{P}\mathbf{H}_o^{\top} + \mathbf{R}_o$, a track is accepted only if
+\begin{equation}
+  \gamma = \mathbf{r}_o^{\top}\mathbf{S}^{-1}\mathbf{r}_o < \chi^2_{1-\alpha}(d),
+  \label{eq:bg_chi2}
+\end{equation}
+where $d$ is the dimension of $\mathbf{r}_o$ and $\chi^2_{1-\alpha}(d)$ is the threshold of the chi-square distribution at confidence level $1-\alpha$. Residuals that are large relative to their predicted covariance, typically from mistracked features that survived the front-end rejection, exceed the threshold and are discarded before they can corrupt the state. The feature is then discarded; as it never enters the state, the per-update cost remains bounded by the window size.
+
+\subsection{Observability and First-Estimates Jacobians}
+\label{sec:bg_fej}
+Visual-inertial estimation has four unobservable degrees of freedom: the global position ($3$) and the rotation about gravity, that is the yaw ($1$). Roll and pitch are rendered observable by the gravity direction sensed through the accelerometer, and metric scale by the accelerometer itself, but no measurement fixes the global position or heading. A consistent estimator must therefore gain no information along these directions. A standard EKF, however, re-evaluates its Jacobians at the latest estimate at every step; because the linearisation point changes over time, the linearised system acquires spurious observability of this subspace, the covariance shrinks along it, and the filter becomes over-confident---typically manifesting as spurious yaw drift~\cite{Huang_2010}.
+
+The First-Estimates Jacobian (FEJ) technique~\cite{Huang_2010, Li_Mourikis_2013} prevents this by evaluating the propagation and measurement Jacobians at the \emph{first} estimate of each state---fixed once that state enters the filter---rather than at the latest estimate. Holding the linearisation point fixed preserves the correct unobservable subspace, so no spurious information is gained and consistency is maintained. The pipeline developed in this thesis adopts FEJ anchoring; its concrete implementation is described in Chapter~\ref{ch:method}.
+
+\section{Visual Front-End}
+\label{sec:bg_frontend}
+The front-end converts the raw image stream into the sparse feature tracks consumed by the measurement model of Section~\ref{sec:bg_measurement}: each track is a sequence of normalised image observations of a single scene point across several frames. Two front-end paradigms are compared in this thesis---Kanade--Lucas--Tomasi (KLT) optical-flow tracking and ORB descriptor matching---because their differing assumptions are stressed in different ways by thermal imagery.
+
+\subsection{Feature Detection and Tracking}
+\label{sec:bg_tracking}
+Salient points are first detected as corners: image locations with a strong intensity gradient in two directions, and therefore good localisation. The Shi--Tomasi criterion~\cite{Shi_1994} is a standard choice. The two front-ends then establish inter-frame correspondences differently.
+
+The KLT tracker~\cite{Lucas_1981} follows each corner from one frame to the next by directly aligning a small intensity window. Under the brightness-constancy assumption---that the appearance of a physical point is unchanged between consecutive frames---it solves for the displacement that minimises the photometric (sum-of-squared-difference) error, iterating from coarse to fine over an image pyramid to accommodate larger motions. It carries no descriptor, so a track that is lost cannot be re-acquired; new corners are detected to replenish the set.
+
+ORB~\cite{Rublee_2011} instead detects FAST corners and computes a rotation-aware binary descriptor, associating features between frames by Hamming distance. Descriptor matching can re-associate a feature after larger inter-frame motion or a brief loss, at the cost of relying on the repeatability of the binary descriptor.
+
+The two make different demands on the imagery, which matters for the thermal modality (Section~\ref{sec:bg_thermal}): KLT depends on brightness constancy, which the radiometric instability of thermal sensors violates, whereas ORB depends on descriptor repeatability, which the low contrast of thermal scenes undermines. Each surviving track contributes its sequence of normalised observations to the multi-state constraint of Section~\ref{sec:bg_measurement}.
+
+\subsection{Outlier Rejection}
+\label{sec:bg_outlier}
+Incorrect correspondences would corrupt the filter, so a rejection chain precedes the update. For KLT, a forward--backward consistency check tracks each point to the next frame and back again; a point whose round-trip does not return to its origin within a tolerance is discarded, which catches asymmetric tracking failures. For descriptor matching, Lowe's ratio test retains only matches whose best candidate is sufficiently closer than the second-best. A geometric test then verifies the surviving correspondences against a two-view model: a fundamental matrix is fitted with Random Sample Consensus (RANSAC)~\cite{Fischler_1981}, and correspondences inconsistent with the recovered epipolar geometry are rejected as outliers, together with a gate on the maximum admissible pixel displacement. The cleaned tracks are passed to the back-end, where the $\chi^2$ test of Section~\ref{sec:bg_update} provides a final statistical gate.
+
+\section{Thermal Image Formation and Preprocessing}
+\label{sec:bg_thermal}
+Long-wave infrared (LWIR) thermal cameras image emitted thermal radiation (roughly $8$--$14~\mu\mathrm{m}$) rather than reflected visible light, so they perceive a scene in darkness and through smoke or light fog~\cite{Khattak_2019, Dhrafani_2025}. A microbolometer sensor produces a radiometric frame at $14$- or $16$-bit depth, reflecting the wide dynamic range of scene temperature, which must be reduced to $8$-bit before conventional detectors and descriptors can be applied.
+
+Several characteristics of the modality challenge the brightness-constancy and repeatability assumptions of the front-end. Automatic gain control (AGC) rescales the displayed intensity of each frame according to the current scene-temperature range, so the apparent intensity of a fixed physical point changes between frames, directly violating brightness constancy~\cite{Vidas_2012}. Periodic non-uniformity correction (NUC), which on many commercial cores is performed by briefly closing an internal shutter and is then also referred to as flat-field correction (FFC), recalibrates the per-pixel response~\cite{Gade_2014}; during this interval the image freezes and the camera is momentarily blind. The sensors are also of low spatial resolution, and thermal scenes are often smooth and low-contrast, yielding few well-localised corners.
+
+To prepare the raw frames, a sequence of established operators is applied: geometric undistortion (a plumb-bob or fisheye remap), Gaussian denoising to suppress sensor speckle, Contrast-Limited Adaptive Histogram Equalisation (CLAHE)~\cite{Zuiderveld_1994} for local contrast enhancement with a clip limit that bounds noise amplification, and a final normalisation of the high-bit-depth frame to $8$-bit by fixed or per-frame percentile bounds. The choice and \emph{ordering} of these operators is not unique; their effect on tracking, in particular the relative placement of contrast enhancement and normalisation, is examined empirically in this thesis (Chapter~\ref{ch:results_and_discussion}).
+
+Because contrast enhancement is central to preparing low-contrast thermal frames for feature extraction, the CLAHE operator is described in more detail. Ordinary histogram equalisation spreads the intensity distribution of an image to increase global contrast: with $h(i)$ the histogram of an $L$-level image of $n$ pixels, the normalised cumulative distribution
+\begin{equation}
+  T(i) = \frac{L-1}{n}\sum_{j=0}^{i} h(j)
+\end{equation}
+is used as an intensity mapping, so that a flat region of the histogram is stretched and faint gradients become steeper. Applying this transform globally, however, over-amplifies noise in near-uniform regions and washes out local structure. \emph{Adaptive} histogram equalisation instead partitions the image into small tiles and computes a separate mapping $T(i)$ per tile, enhancing local rather than global contrast, which suits thermal scenes whose informative gradients are weak and spatially localised. The \emph{contrast-limited} variant additionally clips each tile histogram at a threshold (the clip limit) before forming the cumulative sum, redistributing the clipped mass uniformly; this bounds the slope of $T(i)$ and therefore the amount of noise amplification. The net effect is to sharpen the weak edges on which the feature front-end depends, at the cost of a tunable trade-off between contrast gain and noise, whose placement in the preprocessing chain is examined in Chapter~\ref{ch:results_and_discussion}.
+
+\section{Trajectory-Evaluation Metrics}
+\label{sec:bg_metrics}
+Estimated trajectories are assessed against a reference using two complementary metrics~\cite{Sturm_2012}. The Absolute Trajectory Error (ATE) measures global consistency: after aligning the estimate to the reference, it reports the root-mean-square position difference over the whole run. The Relative Pose Error (RPE) measures local drift by comparing relative motions over fixed sub-intervals; being a function of relative poses, it is invariant to any global alignment.
+
+The choice of alignment must match the unobservable degrees of freedom of the sensor configuration~\cite{Zhang_2018}. For monocular visual odometry the absolute scale and the global rigid pose are unobservable ($7$ DOF: $3$ position, $3$ orientation, and $1$ scale), so a similarity transform $\mathrm{Sim}(3)$ is appropriate. In visual-\emph{inertial} estimation, however, the accelerometer renders metric scale observable and gravity renders roll and pitch observable, leaving only the global position and the yaw---four degrees of freedom---unobservable. The aligning transform must therefore be restricted to exactly these four: a $4$-DOF alignment over position and yaw. A full $\mathrm{SE}(3)$ alignment would additionally rotate the trajectory in roll and pitch and so absorb genuine attitude drift, whereas a $\mathrm{Sim}(3)$ alignment would rescale it and conceal the very scale error the inertial channel is meant to resolve; both would flatter the estimate. Accordingly, this thesis reports ATE under $4$-DOF alignment and RPE---being alignment-invariant---directly, computed with the \texttt{evo} library~\cite{Grupp_2017}. These are complemented by the drift rate (ATE as a fraction of the path length) and a filter-consistency indicator based on the normalised innovation squared (NIS). The NIS reuses the Mahalanobis quantity of Eq.~\ref{eq:bg_chi2}, $\gamma = \mathbf{r}_o^{\top}\mathbf{S}^{-1}\mathbf{r}_o$, whose expectation under a consistent filter equals the residual dimension $d$~\cite{BarShalom_2001}. A time-averaged NIS substantially above $d$ signals an over-confident filter (covariance too small, valid updates rejected), while a value well below $d$ signals an over-conservative one; the indicator therefore reveals whether the IMU noise parametrisation of Section~\ref{sec:bg_imu_meas} matches the data.
