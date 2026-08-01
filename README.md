@@ -1,4 +1,4 @@
-# Monocular Thermal-Inertial Odometry (TIO)
+# Monocular Thermal-Inertial Odometry (mTIO)
 
 Monocular MSCKF-based thermal-inertial odometry, evaluated across an RGB sanity-check baseline and three thermal datasets spanning indoor/outdoor flight and ground-vehicle driving.
 
