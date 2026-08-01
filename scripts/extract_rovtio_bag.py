@@ -1,5 +1,5 @@
 """Extract ROVTIO alt1/alt2/lt* recordings into a flat on-disk layout
-compatible with thermal_vo.dataloader.
+compatible with mTIO.dataloader.
 
 The ROVTIO dataset ships as 10 split ROS1 .bag files for a single recording
 (`m100_charlie_2021-06-09-23-XX-XX_N.bag`). This script reads them in

@@ -7,13 +7,13 @@ Writes results/overleaf/sthereo_valley_ORB_CLAHEON_NORM-CLAHE_traj_tracked.png
 and copies the existing diagnostics figure alongside it.
 """
 import os, sys, shutil, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
-from thermal_vo.evaluation import align_and_compute_metrics, plot_trajectory
+sys.path.insert(0, 'src/mTIO')
+from mTIO.evaluation import align_and_compute_metrics, plot_trajectory
 
 NAME    = 'sthereo_valley_ORB_CLAHEON_NORM-CLAHE'
 DIVERGE = 95.0          # hand-marked divergence (results/divergence_marks.csv)
 
-cfg = importlib.import_module('thermal_vo.config_sthereo')
+cfg = importlib.import_module('mTIO.config_sthereo')
 gt  = cfg.load_ground_truth()
 
 raw  = np.loadtxt(f'results/{NAME}.txt')          # t x y z qx qy qz qw

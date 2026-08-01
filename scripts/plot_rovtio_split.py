@@ -14,10 +14,10 @@ import os
 import sys
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src/thermal_vo'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src/mTIO'))
 
-from thermal_vo import config_rovtio as config
-from thermal_vo.evaluation import align_and_compute_metrics, plot_trajectory
+from mTIO import config_rovtio as config
+from mTIO.evaluation import align_and_compute_metrics, plot_trajectory
 
 TRAJ_TXT = 'results/msckf_vio_rovtio_alt1_orb_claheon.txt'
 SPLIT_S  = 118.2          # divergence onset (the point where err>5 m becomes permanent)

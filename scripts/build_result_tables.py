@@ -3,10 +3,10 @@
 Uses the trajectory .txt + per-dataset GT + manual marks. RPE via evo.
 """
 import os, sys, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
+sys.path.insert(0, 'src/mTIO')
 from evo.core import metrics as evom, sync
 from evo.core.trajectory import PoseTrajectory3D
-from thermal_vo.evaluation import align_and_compute_metrics
+from mTIO.evaluation import align_and_compute_metrics
 
 CFG = {'rovtio':'config_rovtio','sthereo':'config_sthereo',
        'firestereo':'config_firestereo','euroc':'config_euroc'}
@@ -30,7 +30,7 @@ DS_OF = {'ROVTIO':'rovtio','STheReo':'sthereo','FIReStereo':'firestereo','EuRoC'
 _gtcache={}
 def gt_of(ds):
     if ds not in _gtcache:
-        c=importlib.import_module('thermal_vo.'+CFG[DS_OF[ds]]); _gtcache[ds]=c.load_ground_truth()
+        c=importlib.import_module('mTIO.'+CFG[DS_OF[ds]]); _gtcache[ds]=c.load_ground_truth()
     return _gtcache[ds]
 def wxyz(q): q=np.asarray(q,float); return q[:,[3,0,1,2]]
 def evo_rpe(t,xyz,quat,gt,lo=None,hi=None,gt_wxyz=False):

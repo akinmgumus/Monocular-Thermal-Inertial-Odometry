@@ -8,14 +8,14 @@ image, complementing the block-diagram pipelines in the Method chapter.
 Saved to results/overleaf/fig_preproc_chain.png.
 """
 import os, sys, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
+sys.path.insert(0, 'src/mTIO')
 import cv2
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from thermal_vo.common_params import PREPROC
-import thermal_vo.dataloader2 as dl2          # Norm -> CLAHE (adopted order)
+from mTIO.common_params import PREPROC
+import mTIO.dataloader2 as dl2          # Norm -> CLAHE (adopted order)
 
-cfg = importlib.import_module('thermal_vo.config_rovtio')
+cfg = importlib.import_module('mTIO.config_rovtio')
 cal = cfg.load_camera_intrinsics()
 kw  = dict(K=cal['K'], D=cal['D'], distortion_model=cal['distortion_model'])
 

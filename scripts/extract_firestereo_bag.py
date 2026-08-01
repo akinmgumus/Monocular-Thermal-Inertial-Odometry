@@ -1,5 +1,5 @@
 """Extract thermal_left images and IMU from a FIReStereo rosbag into a flat
-on-disk layout compatible with thermal_vo.dataloader.
+on-disk layout compatible with mTIO.dataloader.
 
 Output structure:
     <out_dir>/

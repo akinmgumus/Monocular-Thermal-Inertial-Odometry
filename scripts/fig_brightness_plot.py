@@ -5,14 +5,14 @@ frame-to-frame evidences the brightness-constancy violation.
 Saved to results/overleaf/fig_brightness_plot.png.
 """
 import os, sys, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
+sys.path.insert(0, 'src/mTIO')
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from thermal_vo.common_params import PREPROC
-import thermal_vo.dataloader2 as dl2
+from mTIO.common_params import PREPROC
+import mTIO.dataloader2 as dl2
 
 T0, T1 = 64.0, 70.0
-cfg = importlib.import_module('thermal_vo.config_rovtio'); cal = cfg.load_camera_intrinsics()
+cfg = importlib.import_module('mTIO.config_rovtio'); cal = cfg.load_camera_intrinsics()
 L = dl2.ThermalDataLoader(cfg.CAM0_DIR, bit_depth=16, undistort=True,
                           K=cal['K'], D=cal['D'], distortion_model=cal['distortion_model'],
                           use_clahe=True, **PREPROC)

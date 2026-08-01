@@ -24,7 +24,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src/thermal_vo'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src/mTIO'))
 
 DL_VER = os.environ.get('TVIO_DL_VER', '2') 
 # 1 = CLAHE-NORM
@@ -40,19 +40,19 @@ USE_CLAHE      = os.environ.get('TVIO_USE_CLAHE', '1') == '1'
 
 
 if DL_VER == '2':
-    from thermal_vo.dataloader2 import ThermalDataLoader, IMULoader, VIOSequencer
+    from mTIO.dataloader2 import ThermalDataLoader, IMULoader, VIOSequencer
 else:
-    from thermal_vo.dataloader import ThermalDataLoader, IMULoader, VIOSequencer
-from thermal_vo.orb        import ORBTracker
-from thermal_vo.klt        import KLTTracker
-from thermal_vo.msckf      import MSCKF
-from thermal_vo.evaluation import (
+    from mTIO.dataloader import ThermalDataLoader, IMULoader, VIOSequencer
+from mTIO.orb        import ORBTracker
+from mTIO.klt        import KLTTracker
+from mTIO.msckf      import MSCKF
+from mTIO.evaluation import (
     align_and_compute_metrics, plot_trajectory, plot_diagnostics,
     append_results_csv, build_csv_row, render_summary_table,
     run_segment_analysis,
 )
-from thermal_vo            import config_rovtio as config
-from thermal_vo.common_params import *   # shared switches, window, ZUPT, PREPROC, MSCKF_PARAMS, make_tracker
+from mTIO            import config_rovtio as config
+from mTIO.common_params import *   # shared switches, window, ZUPT, PREPROC, MSCKF_PARAMS, make_tracker
 
 
 GAUSSIAN_SIGMA = PREPROC['gaussian_sigma']

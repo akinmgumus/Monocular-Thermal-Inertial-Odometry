@@ -7,10 +7,10 @@ quality independently of the vision front-end.
 Saved to results/overleaf/fig_imuonly.png.
 """
 import os, sys, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
+sys.path.insert(0, 'src/mTIO')
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from thermal_vo.evaluation import align_and_compute_metrics
+from mTIO.evaluation import align_and_compute_metrics
 
 ALIGN_S = 5.0      # posyaw fit window at the start (dead-reckoning anchor)
 T_MAX   = 90.0     # focus on the drift onset (tracking windows are all < 120 s)
@@ -24,7 +24,7 @@ RUNS = [
 
 fig, ax = plt.subplots(figsize=(9, 4.6))
 for label, cfgname, name, color in RUNS:
-    cfg = importlib.import_module('thermal_vo.' + cfgname)
+    cfg = importlib.import_module('mTIO.' + cfgname)
     gt  = cfg.load_ground_truth()
     raw = np.loadtxt(f'results/{name}.txt')
     traj4 = raw[:, :4]

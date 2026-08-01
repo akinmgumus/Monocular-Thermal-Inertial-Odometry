@@ -160,7 +160,7 @@ class MSCKF:
         self.gravity = np.array([0.0, 0.0, 9.81])
 
         # --- run-time instrumentation (accumulated across all update() calls,
-        #     consumed by thermal_vo.evaluation for filter-consistency stats)
+        #     consumed by mTIO.evaluation for filter-consistency stats)
         self.cum_n_in    = 0    # total tracks reaching update across the run
         self.cum_n_used  = 0    # total tracks that passed chi² gate & updated P
         self.cum_n_chi2  = 0    # total tracks rejected by Mahalanobis gate

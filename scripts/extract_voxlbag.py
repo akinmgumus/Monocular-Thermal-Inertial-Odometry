@@ -1,5 +1,5 @@
 """Extract thermal_left, IMU, and PX4 odometry from a decoded VOXL ROS2 bag
-into a flat on-disk layout compatible with thermal_vo.dataloader.
+into a flat on-disk layout compatible with mTIO.dataloader.
 
 Output structure:
     <out_dir>/

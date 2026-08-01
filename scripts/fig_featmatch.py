@@ -7,18 +7,18 @@ degeneracy, not a matching failure.
 Saved to results/overleaf/fig_featmatch.png.
 """
 import os, sys, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
+sys.path.insert(0, 'src/mTIO')
 import cv2
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from thermal_vo.common_params import PREPROC
-import thermal_vo.dataloader2 as dl2          # Norm -> CLAHE (adopted order)
+from mTIO.common_params import PREPROC
+import mTIO.dataloader2 as dl2          # Norm -> CLAHE (adopted order)
 
 # search the turn only within the tracked phase (ORB diverges ~95 s)
 T_LO, T_HI = 10.0, 95.0
 N_MATCHES  = 70
 
-cfg = importlib.import_module('thermal_vo.config_sthereo')
+cfg = importlib.import_module('mTIO.config_sthereo')
 cal = cfg.load_camera_intrinsics()
 
 L = dl2.ThermalDataLoader(cfg.THERMAL_LEFT_DIR, bit_depth=16, undistort=True,

@@ -3,15 +3,15 @@ and Norm->CLAHE (dataloader2), for each of the three thermal datasets.
 Saved to results/overleaf/fig_preproc_order.png.
 """
 import os, sys, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
+sys.path.insert(0, 'src/mTIO')
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from thermal_vo.common_params import PREPROC
-import thermal_vo.dataloader  as dl1     # CLAHE -> Norm
-import thermal_vo.dataloader2 as dl2     # Norm  -> CLAHE
+from mTIO.common_params import PREPROC
+import mTIO.dataloader  as dl1     # CLAHE -> Norm
+import mTIO.dataloader2 as dl2     # Norm  -> CLAHE
 
 def setup(ds):
-    cfg = importlib.import_module(f'thermal_vo.config_{ds}')
+    cfg = importlib.import_module(f'mTIO.config_{ds}')
     if ds == 'rovtio':
         cal = cfg.load_camera_intrinsics()
         cam = cfg.CAM0_DIR

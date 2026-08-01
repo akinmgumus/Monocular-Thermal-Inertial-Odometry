@@ -23,11 +23,11 @@ import csv
 import importlib
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src/thermal_vo'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../src/mTIO'))
 
 from evo.core import metrics, sync
 from evo.core.trajectory import PoseTrajectory3D
-from thermal_vo.evaluation import (
+from mTIO.evaluation import (
     align_and_compute_metrics, load_divergence_mark, build_csv_row,
     append_results_csv, plot_trajectory, plot_diagnostics, render_summary_table,
     run_segment_analysis, append_segments_csv,
@@ -115,7 +115,7 @@ def _read_row(csv_path, run_id):
 
 
 def evaluate(traj_path, ds):
-    config = importlib.import_module(f"thermal_vo.{CONFIGS[ds]}")
+    config = importlib.import_module(f"mTIO.{CONFIGS[ds]}")
     t, xyz, quat, has_q = load_traj(traj_path)
     gt = config.load_ground_truth()
 

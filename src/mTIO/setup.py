@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-package_name = 'thermal_vo'
+package_name = 'mTIO'
 
 setup(
     name=package_name,
@@ -13,11 +13,11 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Akin Mert Gumus',
-    description='Thermal Monocular Visual Odometry',
+    description='Monocular Thermal-Inertial Odometry (MSCKF)',
     license='MIT',
     entry_points={
         'console_scripts': [
-            'run_vo = thermal_vo.scripts.run_vo:main',
+            'run_vo = mTIO.scripts.run_vo:main',
         ],
     },
 )

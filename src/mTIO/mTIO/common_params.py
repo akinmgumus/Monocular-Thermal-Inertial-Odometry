@@ -12,7 +12,7 @@ and are NOT tunable parameters, so they are not here:
 
 Usage in a test script::
 
-    from thermal_vo import common_params as P
+    from mTIO import common_params as P
 
     METHOD    = 'orb'      # 'orb' or 'klt'   <- chosen per run
     USE_CLAHE = True        #                  <- chosen per run
@@ -27,11 +27,11 @@ Usage in a test script::
 To retune the pipeline, edit THIS file once; every dataset picks it up.
 """
 
-from thermal_vo.klt import KLTTracker
-from thermal_vo.orb import ORBTracker
+from mTIO.klt import KLTTracker
+from mTIO.orb import ORBTracker
 
 
-# Names exported by ``from thermal_vo.common_params import *``. Test scripts pull
+# Names exported by ``from mTIO.common_params import *``. Test scripts pull
 # the whole shared block through this; the tracker classes above are deliberately
 # NOT listed, so they do not leak into the importing namespace.
 __all__ = [
@@ -70,7 +70,7 @@ ZUPT_SIGMA            = 0.01   # m/s     — pseudo zero-velocity measurement st
 
 # Divergence is NOT auto-detected. Failure points (settle / divergence) are
 # marked by hand per run in results/divergence_marks.csv and applied at
-# evaluation time (see thermal_vo.evaluation.load_divergence_mark), because the
+# evaluation time (see mTIO.evaluation.load_divergence_mark), because the
 # transient behaviours differ too much between datasets for a single rule.
 
 

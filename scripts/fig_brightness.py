@@ -4,17 +4,17 @@ violation from per-frame percentile normalisation).
 Saved to results/overleaf/fig_brightness.png.
 """
 import os, sys, importlib, numpy as np
-sys.path.insert(0, 'src/thermal_vo')
+sys.path.insert(0, 'src/mTIO')
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from thermal_vo.common_params import PREPROC
-import thermal_vo.dataloader2 as dl2     # Norm -> CLAHE
+from mTIO.common_params import PREPROC
+import mTIO.dataloader2 as dl2     # Norm -> CLAHE
 
 T_CENTER = 67.13        # seconds (relative to first frame)
 STRIDE   = 1           # frames between the four shown (~0.12 s each @ 25 Hz)
 N        = 10
 
-cfg = importlib.import_module('thermal_vo.config_rovtio')
+cfg = importlib.import_module('mTIO.config_rovtio')
 cal = cfg.load_camera_intrinsics()
 L = dl2.ThermalDataLoader(cfg.CAM0_DIR, bit_depth=16, undistort=True,
                           K=cal['K'], D=cal['D'],

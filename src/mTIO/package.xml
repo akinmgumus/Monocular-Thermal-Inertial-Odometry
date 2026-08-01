@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>thermal_vo</name>
+  <name>mTIO</name>
   <version>0.0.1</version>
-  <description>Thermal Monocular Visual Odometry</description>
-  <maintainer email="akin@todo.todo">Akin Mert Gumus</maintainer>
+  <description>Monocular Thermal-Inertial Odometry (MSCKF)</description>
+  <maintainer email="akinmgumus@gmail.com">Akin Mert Gumus</maintainer>
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>
