@@ -158,7 +158,7 @@ def run():
     msckf.nominal_vel = np.zeros(3)
     msckf.gravity     = np.array([0.0, 0.0, config.GRAVITY_MAGNITUDE])
 
-    # Quasi-static window istatistikleri
+    # Quasi-static window statistics
     t0_qs = t_init + config.INIT_QUASI_STATIC_T0
     t1_qs = t_init + config.INIT_QUASI_STATIC_T1
     mask_qs = (imu.timestamps >= t0_qs) & (imu.timestamps <= t1_qs)

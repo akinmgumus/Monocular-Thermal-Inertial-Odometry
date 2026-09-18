@@ -93,8 +93,8 @@ def run():
           f"|t|={np.linalg.norm(t_imu_cam):.3f} m")
 
     # IMU clock → cam clock: t_offset = -timeshift_imu_cam.
-    # firestereo.yaml: timeshift = -0.0386 → t_offset = +0.0386 (IMU saatini
-    # cam saatine 38.6 ms ileri al).
+    # firestereo.yaml: timeshift = -0.0386 → t_offset = +0.0386 (advance the IMU
+    # clock by 38.6 ms onto the camera clock).
     timeshift = config.load_timeshift_imu_cam()
     t_offset  = -timeshift
     print(f"timeshift_imu_cam = {timeshift*1000:+.1f} ms  →  IMU t_offset = {t_offset*1000:+.1f} ms")
@@ -127,7 +127,7 @@ def run():
 
     # ---- MSCKF ----
     msckf = MSCKF(
-        K=K, D=None,                # undistortion loader içinde
+        K=K, D=None,                # undistortion is handled inside the loader
         **MSCKF_PARAMS,             # shared back-end config (common_params)
     )
 

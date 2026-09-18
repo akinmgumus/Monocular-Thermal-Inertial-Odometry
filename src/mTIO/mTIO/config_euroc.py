@@ -59,8 +59,8 @@ def load_extrinsic(yaml_path=CAM0_YAML):
 def load_ground_truth(gt_csv=GT_CSV):
     """EuRoC state_groundtruth_estimate0/data.csv.
 
-    Kolonlar: t [ns], p_xyz, q_wxyz, v_xyz, b_gyro_xyz, b_accel_xyz.
-    Timestamp nanosaniyeden saniyeye çevrilir.
+    Columns: t [ns], p_xyz, q_wxyz, v_xyz, b_gyro_xyz, b_accel_xyz.
+    Timestamps are converted from nanoseconds to seconds.
     """
     raw = np.loadtxt(gt_csv, delimiter=',')
     t = raw[:, 0]
